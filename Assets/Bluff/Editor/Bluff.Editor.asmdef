@@ -1,0 +1,19 @@
+{
+    "name": "Bluff.Editor",
+    "rootNamespace": "Bluff.EditorTools",
+    "references": [
+        "Bluff.Core",
+        "Bluff.Game"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
