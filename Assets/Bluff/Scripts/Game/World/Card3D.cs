@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using Bluff.Core;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -16,21 +17,62 @@ namespace Bluff.Game
         public const float Thickness = 0.0015f;
 
         static Mesh edgeMesh;
+        static Mesh outlineMesh;
+        static Shader handShader;
+        static readonly Dictionary<Texture2D, Material> handMaterials = new Dictionary<Texture2D, Material>();
+
+        internal static readonly Bounds GeometryBounds = new Bounds(Vector3.zero, new Vector3(Width, Height, Thickness));
+
+        internal static Vector3 BoundsCorner(Bounds bounds, int index)
+        {
+            return bounds.center + Vector3.Scale(bounds.extents, new Vector3(
+                (index & 1) == 0 ? -1f : 1f, (index & 2) == 0 ? -1f : 1f, (index & 4) == 0 ? -1f : 1f));
+        }
+
+        static Material HandMaterial(Texture2D texture)
+        {
+            if (handMaterials.TryGetValue(texture, out var material) && material != null)
+                return material;
+            if (handShader == null)
+                handShader = Resources.Load<Shader>("BluffShaders/BluffCard");
+            if (handShader == null)
+                throw new System.InvalidOperationException("Missing Resources/BluffShaders/BluffCard shader.");
+            material = new Material(handShader)
+            {
+                name = "Hand Card " + texture.name,
+                hideFlags = HideFlags.DontUnloadUnusedAsset,
+                mainTexture = texture,
+                color = Color.white,
+            };
+            material.SetFloat("_Cutoff", 0.5f);
+            handMaterials[texture] = material;
+            return material;
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetHandMaterials()
+        {
+            foreach (var material in handMaterials.Values)
+                if (material != null)
+                    Destroy(material);
+            handMaterials.Clear();
+            handShader = null;
+        }
 
         MeshRenderer frontRenderer;
         MeshRenderer backRenderer;
         MeshRenderer edgeRenderer;
-        MeshRenderer glowRenderer;
-        Material glowMaterial;
+        MeshRenderer outlineRenderer;
+        MaterialPropertyBlock outlineProperties;
         Texture2D frontTexture;
         Texture2D backTexture;
         float frontSmoothness = 0.22f;
         float backSmoothness = 0.22f;
         bool handLighting;
         BoxCollider box;
-        float glowAlpha;
-        float glowTarget;
-        Color glowColor = Theme.Gold;
+        float outlineAmount;
+        float outlineTarget;
+        Color outlineColor = Theme.Gold;
 
         public Card Card { get; private set; }
         public bool HasCard { get; private set; }
@@ -51,6 +93,7 @@ namespace Bluff.Game
 
         void Build(bool clickable)
         {
+            outlineProperties = new MaterialPropertyBlock();
             frontTexture = backTexture = CardArt.Back;
             var front = Art.Quad("Front", transform, new Vector3(0f, 0f, -Thickness * 0.5f), new Vector2(Width, Height), Art.Lit(Color.white, frontSmoothness, 0f, frontTexture));
             frontRenderer = front.GetComponent<MeshRenderer>();
@@ -73,16 +116,73 @@ namespace Bluff.Game
             edgeRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
             edgeRenderer.receiveShadows = true;
 
-            glowMaterial = Art.AdditiveInstance(new Color(1f, 1f, 1f, 0f), Art.SoftTexture);
-            var glow = Art.Quad("Glow", transform, new Vector3(0f, 0f, 0.004f), new Vector2(Width * 1.9f, Height * 1.6f), glowMaterial);
-            glowRenderer = glow.GetComponent<MeshRenderer>();
-            glowRenderer.enabled = false;
+            if (outlineMesh == null)
+                outlineMesh = BuildOutlineMesh();
+            var outline = new GameObject("Selection Outline");
+            outline.transform.SetParent(transform, false);
+            outline.AddComponent<MeshFilter>().sharedMesh = outlineMesh;
+            outlineRenderer = outline.AddComponent<MeshRenderer>();
+            outlineRenderer.sharedMaterial = HandMaterial(Texture2D.whiteTexture);
+            outlineRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            outlineRenderer.receiveShadows = false;
+            outlineRenderer.enabled = false;
 
             if (clickable)
             {
                 box = gameObject.AddComponent<BoxCollider>();
                 box.size = new Vector3(Width, Height, 0.01f);
             }
+        }
+
+        static Mesh BuildOutlineMesh()
+        {
+            const int steps = 16;
+            const int count = (steps + 1) * 4;
+            const float outside = 0.0011f;
+            const float inside = 0.0006f;
+            var vertices = new Vector3[(count + 1) * 4];
+            var triangles = new int[count * 12];
+            float scaleX = Width / CardArt.DesignWidth;
+            float scaleY = Height / CardArt.DesignHeight;
+            float centerX = (CardArt.DesignWidth * 0.5f - CardArt.CornerRadius - CardArt.EdgeInset) * scaleX;
+            float centerY = (CardArt.DesignHeight * 0.5f - CardArt.CornerRadius - CardArt.EdgeInset) * scaleY;
+            float radiusX = CardArt.CornerRadius * scaleX;
+            float radiusY = CardArt.CornerRadius * scaleY;
+            for (int side = 0; side < 2; side++)
+            {
+                int start = side * (count + 1) * 2;
+                float z = (side == 0 ? -1f : 1f) * (Thickness * 0.5f + 0.00012f);
+                for (int i = 0; i <= count; i++)
+                {
+                    int point = i % count;
+                    int corner = point / (steps + 1);
+                    float angle = (corner + point % (steps + 1) / (float)steps) * Mathf.PI * 0.5f;
+                    float x = corner == 0 || corner == 3 ? centerX : -centerX;
+                    float y = corner < 2 ? centerY : -centerY;
+                    int a = start + i * 2;
+                    vertices[a] = new Vector3(x + Mathf.Cos(angle) * (radiusX + outside), y + Mathf.Sin(angle) * (radiusY + outside), z);
+                    vertices[a + 1] = new Vector3(x + Mathf.Cos(angle) * (radiusX - inside), y + Mathf.Sin(angle) * (radiusY - inside), z);
+                    if (i == count) continue;
+                    int t = (side * count + i) * 6;
+                    triangles[t] = a;
+                    triangles[t + 1] = side == 0 ? a + 1 : a + 2;
+                    triangles[t + 2] = side == 0 ? a + 2 : a + 1;
+                    triangles[t + 3] = a + 2;
+                    triangles[t + 4] = side == 0 ? a + 1 : a + 3;
+                    triangles[t + 5] = side == 0 ? a + 3 : a + 1;
+                }
+            }
+            var mesh = new Mesh
+            {
+                name = "Bluff Card Outline",
+                hideFlags = HideFlags.DontUnloadUnusedAsset,
+                vertices = vertices,
+                uv = new Vector2[vertices.Length],
+                triangles = triangles,
+            };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         static Mesh BuildEdgeMesh()
@@ -186,20 +286,19 @@ namespace Bluff.Game
         void ApplyFaces()
         {
             frontRenderer.sharedMaterial = handLighting
-                ? Art.Unlit(Color.white, frontTexture)
+                ? HandMaterial(frontTexture)
                 : Art.Lit(Color.white, frontSmoothness, 0f, frontTexture);
             backRenderer.sharedMaterial = handLighting
-                ? Art.Unlit(Color.white, backTexture)
+                ? HandMaterial(backTexture)
                 : Art.Lit(Color.white, backSmoothness, 0f, backTexture);
             frontRenderer.receiveShadows = !handLighting;
             backRenderer.receiveShadows = !handLighting;
         }
 
-        /// <summary>Sorot kartu dengan cahaya lembut di belakangnya (alpha 0 = mati).</summary>
         public void SetGlow(Color color, float strength)
         {
-            glowColor = color;
-            glowTarget = strength;
+            outlineColor = color;
+            outlineTarget = Mathf.Clamp01(strength);
         }
 
         public void SetCastShadows(bool cast)
@@ -283,22 +382,16 @@ namespace Bluff.Game
         {
             if (Hovered && PointerInputBlocked)
                 SetHovered(false);
-            if (Mathf.Abs(glowAlpha - glowTarget) > 0.001f)
-                glowAlpha = Mathf.MoveTowards(glowAlpha, glowTarget, Time.unscaledDeltaTime * 4f);
-            bool show = glowAlpha > 0.01f;
-            if (glowRenderer.enabled != show)
-                glowRenderer.enabled = show;
+            outlineAmount = Mathf.MoveTowards(outlineAmount, outlineTarget, Time.deltaTime * 8f);
+            bool show = outlineAmount > 0.04f;
+            if (outlineRenderer.enabled != show)
+                outlineRenderer.enabled = show;
             if (show)
             {
-                float pulse = 0.85f + Mathf.Sin(Time.unscaledTime * 6f) * 0.15f;
-                glowMaterial.SetColor("_Color", glowColor.WithAlpha(glowAlpha * pulse));
+                var color = Color.Lerp(Theme.CardBackLine, outlineColor, Mathf.Clamp01(outlineAmount));
+                outlineProperties.SetColor("_Color", color.WithAlpha(1f));
+                outlineRenderer.SetPropertyBlock(outlineProperties);
             }
-        }
-
-        void OnDestroy()
-        {
-            if (glowMaterial != null)
-                Destroy(glowMaterial);
         }
     }
 }

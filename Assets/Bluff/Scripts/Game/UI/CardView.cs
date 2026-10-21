@@ -102,7 +102,7 @@ namespace Bluff.Game
                 icon.color = Theme.Gold;
                 cornerIcon.color = Theme.Gold;
                 nameLabel.color = Theme.Gold;
-                nameLabel.text = "TOPENG";
+                nameLabel.text = "MASK";
             }
             else
             {

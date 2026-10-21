@@ -34,7 +34,10 @@ namespace Bluff.Game
         readonly List<Card3D> lastPlay = new List<Card3D>();
         readonly List<Card3D> revealed = new List<Card3D>();
         bool stormPending;
+        TablePowerEffect activeShield;
         bool roundElementShown;
+        Humanoid emoteAvatar;
+        Coroutine localEmote;
         Transform fpGun;
         Transform fpMuzzle;
         Transform fpIndexFinger;
@@ -49,6 +52,8 @@ namespace Bluff.Game
         float fpShotSpeed;
         System.Action<Vector3, Vector3> fpOnFire;
         System.Action pendingShotFire;
+        Vector3 lastShotMuzzle;
+        int lastShooter = -1, lastShotTarget = -1;
 
         const float DrawTime = 0.4f;
         const float CockTime = 0.58f;
@@ -83,7 +88,7 @@ namespace Bluff.Game
             names = new string[state.PlayerCount];
             knownPowers = new PowerType[state.PlayerCount];
             for (int i = 0; i < names.Length; i++)
-                names[i] = state.Names != null && i < state.Names.Length ? state.Names[i] : "Pemain " + (i + 1);
+                names[i] = state.Names != null && i < state.Names.Length ? state.Names[i] : "Player " + (i + 1);
 
             scene = TableScene.Create(transform, state.PlayerCount, human, names);
             var cam = scene.Camera;
@@ -91,6 +96,7 @@ namespace Bluff.Game
             if (cam.GetComponent<UnityEngine.EventSystems.PhysicsRaycaster>() == null)
                 cam.gameObject.AddComponent<UnityEngine.EventSystems.PhysicsRaycaster>();
             hand = PlayerHand3D.Create(cam);
+            hand.transform.SetParent(transform, true);
             handFan = hand.transform.Find("Left Fan");
             hand.MaxSelection = Mathf.Max(1, state.Config?.MaxCardsPerPlay ?? 3);
             hud = Hud.Create(uiRoot, canvas, state, human, scene, hand);
@@ -117,9 +123,9 @@ namespace Bluff.Game
 
         void BuildFirstPersonHand()
         {
-            var skin = Art.Lit(Theme.Hex("B88968"), 0.26f);
+            var skin = Art.Lit(Cosmetics.LocalStyle.Skin, 0.26f);
             var nails = Art.Lit(Theme.Hex("C49D80"), 0.32f);
-            var sleeve = Art.Fabric(Theme.Hex("202A23"));
+            var sleeve = Art.Fabric(Color.Lerp(Cosmetics.LocalStyle.Shirt, Theme.Hex("18202A"), .48f));
             var cuff = Art.Fabric(Theme.Hex("AAA797"));
             var palm = Art.Lathe("Palm", fpGun, new Vector3(0.025f, -0.078f, -0.052f), new[]
             {
@@ -228,9 +234,67 @@ namespace Bluff.Game
 
         public void UpdateShootWindow(float fraction) => hud.UpdateShootWindow(fraction);
 
-        public void HideShootWindow() => hud.HideShootWindow();
+        public void HideShootWindow()
+        {
+            hud.HideShootWindow();
+            if (activeShield != null) activeShield.Dismiss();
+            activeShield = null;
+        }
 
         public void Toast(string message, Color color) => hud.Toast(message, color);
+
+        public void ShowEmote(int seat, int target, int emote)
+        {
+            if (seat < 0 || seat >= names.Length || target<0 || target>=names.Length || target==seat || emote < 0 || emote > 1) return;
+            if (seat == humanId)
+            {
+                if(localEmote!=null) StopCoroutine(localEmote);
+                localEmote=StartCoroutine(LocalEmote(target,emote));
+            }
+            else scene.Character(seat)?.React(emote,TargetPoint(target));
+            hud.Log((seat==humanId?"You":names[seat])+(emote==0?(seat==humanId?" laugh at ":" laughs at "):(seat==humanId?" salute ":" salutes "))+(target==humanId?"you":names[target])+".");
+        }
+
+        IEnumerator LocalEmote(int target,int value)
+        {
+            float deadline=Time.time+6f;
+            while(presenting || resolutionFocus || fpShotActive)
+            {
+                if(Time.time>deadline || snapshot.Phase==GamePhase.GameOver) yield break;
+                yield return null;
+            }
+            if(emoteAvatar==null)
+            {
+                emoteAvatar=Humanoid.Create(transform,"Your emote character",Cosmetics.LocalStyle,true);
+                emoteAvatar.transform.position=new Vector3(0,0,-1.2f);
+            }
+            emoteAvatar.gameObject.SetActive(true);
+            foreach(Transform child in emoteAvatar.CardHold) Destroy(child.gameObject);
+            int count=hand.Count;
+            emoteAvatar.SetHeldCardCount(count);emoteAvatar.HoldCards();
+            var fan=new List<Card3D>();
+            for(int i=0;i<count;i++) {var card=Card3D.Create(emoteAvatar.CardHold,"Your held card");card.SetHiddenCard();fan.Add(card);}
+            TableScene.LayoutFan(fan,false);
+            emoteAvatar.React(value,TargetPoint(target));
+            rig.ShowEmote(new Vector3(1.05f,1.6f,-.12f),new Vector3(0f,1.08f,-1.2f));
+            hand.SuspendInput(true);
+            try
+            {
+                while(rig.ShowingEmote) {SetHandVisible(false);yield return null;}
+            }
+            finally
+            {
+                if(emoteAvatar!=null) emoteAvatar.gameObject.SetActive(false);
+                if(hand!=null) hand.SuspendInput(false);
+                SetHandVisible(true);localEmote=null;
+            }
+        }
+
+        void SetHandVisible(bool visible)
+        {
+            if(hand==null) return;
+            foreach(var renderer in hand.GetComponentsInChildren<Renderer>(true)) renderer.forceRenderingOff=!visible;
+        }
 
         // ================================================================== presentasi event
 
@@ -359,6 +423,8 @@ namespace Bluff.Game
 
         IEnumerator PresentEvent(GameEvent e)
         {
+            if(e.Type==GameEventType.ShotFired || e.Type==GameEventType.GameOver || e.Type==GameEventType.CardsPlayed && e.PlayerId==humanId)
+                rig.EndEmote();
             switch (e.Type)
             {
                 case GameEventType.GameStarted:
@@ -392,7 +458,7 @@ namespace Bluff.Game
                     break;
                 case GameEventType.BulletRefunded:
                     Fx.Sparkle(scene.ShellPosition(e.PlayerId, Mathf.Max(0, e.Bullets[e.PlayerId] - 1)) + Vector3.up * 0.04f, Theme.Gold, 18, 0.03f);
-                    hud.Log("Tembakan jitu! Peluru " + Name(e.PlayerId) + " kembali.");
+                    hud.Log("Good shot! Bullet returned to " + Name(e.PlayerId) + ".");
                     break;
                 case GameEventType.PileTaken:
                     yield return PresentPileTaken(e);
@@ -447,14 +513,14 @@ namespace Bluff.Game
             hud.SetPileCount(e.PileCount);
             if (!pendingPacket && e.Type != GameEventType.GameStarted && e.Type != GameEventType.HandDealt &&
                 e.HandCounts != null && humanId >= 0 && humanId < e.HandCounts.Length && hand.Count != e.HandCounts[humanId])
-                Debug.LogWarning("[Bluff] Tampilan tangan (" + hand.Count + ") tidak sama dengan event (" + e.HandCounts[humanId] + ") setelah " + e);
+                Debug.LogWarning("[Bluff] Hand view (" + hand.Count + ") differs from event (" + e.HandCounts[humanId] + ") after " + e);
         }
 
         // ------------------------------------------------------------------ bagi kartu & kuasa
 
         IEnumerator PresentDeal(GameEvent e)
         {
-            hud.Log("Kartu dibagikan: " + e.Count + " kartu per pemain.");
+            hud.Log("Dealt: " + e.Count + " cards per player.");
             for (int id = 0; id < names.Length; id++)
                 scene.SetFanCount(id, 0);
             float stagger = 0.02f / Speed;
@@ -552,7 +618,7 @@ namespace Bluff.Game
             if (mine && e.Power != PowerType.None)
             {
                 hud.SetMyPower(e.Power, false);
-                hud.Log("Kartu Kuasamu: " + PowerText.Name(e.Power) + ".");
+                hud.Log("Your power: " + PowerText.Name(e.Power) + ".");
             }
         }
 
@@ -566,8 +632,8 @@ namespace Bluff.Game
             for (int id = 0; id < names.Length; id++)
                 hud.Label(id)?.HideBubble();
             if (e.Reason == RoundStartReason.GameStart)
-                hud.Toast(Name(e.PlayerId, false) + " memulai permainan!", Theme.Text);
-            hud.Log("Ronde baru, dipimpin " + Name(e.PlayerId) + ".");
+                hud.Toast(Name(e.PlayerId, false) + " starts the match!", Theme.Text);
+            hud.Log("New round led by " + Name(e.PlayerId) + ".");
         }
 
         void PresentTurn(GameEvent e)
@@ -586,7 +652,7 @@ namespace Bluff.Game
                 scene.LookAll(focus);
                 scene.Character(e.PlayerId)?.LookAt(scene.PileAnchor.position);
                 rig.Glance(focus);
-                hud.SetWaitingHint("Menunggu " + Name(e.PlayerId) + "…");
+                hud.SetWaitingHint("Waiting for " + Name(e.PlayerId) + "…");
             }
         }
 
@@ -594,6 +660,7 @@ namespace Bluff.Game
 
         IEnumerator PresentPlay(GameEvent e)
         {
+            if (activeShield != null) { activeShield.Dismiss(); activeShield = null; }
             bool mine = e.PlayerId == humanId;
             var character = scene.Character(e.PlayerId);
             var hold = mine ? hand.PlayHold : character != null ? character.PlayHold : null;
@@ -637,6 +704,8 @@ namespace Bluff.Game
                             card.SetHandLighting(true);
                     }
                     tightening = StartTask(TightenPacket(packet, 0.18f / speed));
+                    if (!resolutionFocus)
+                        rig.Focus(scene.PileAnchor.position, 0.08f, 54f);
                 };
                 System.Action release = () =>
                 {
@@ -644,30 +713,46 @@ namespace Bluff.Game
                         return;
                     CancelTask(tightening);
                     lastPlay.Clear();
+                    var firstSlot = NextPileSlot(out _);
+                    int firstIndex = pile.Count;
+                    for (int i = 0; i < packet.Count; i++)
+                    {
+                        var slot = PileSlot(scene.PileAnchor.position, firstIndex + i, out var rotation);
+                        slot.y = firstSlot.y + i * (Card3D.Thickness + 0.0003f);
+                        slots.Add(slot);
+                        rotations.Add(rotation);
+                    }
+                    pile.AddRange(packet);
+                    lastPlay.AddRange(packet);
                     released = true;
                     for (int i = 0; i < packet.Count; i++)
                     {
                         var card = packet[i];
-                        card.transform.SetParent(transform, true);
+                        card.transform.SetParent(null, true);
                         card.SetHandLighting(false);
                         card.SetCastShadows(true);
-                        var slot = NextPileSlot(out var rotation);
-                        slots.Add(slot);
-                        rotations.Add(rotation);
-                        pile.Add(card);
-                        lastPlay.Add(card);
-                        flightTasks.Add(StartTask(FlyDelayed(card, slot, rotation, (0.45f + i * 0.04f) / speed, i == 0)));
+                        var collider = card.GetComponent<BoxCollider>();
+                        if (collider != null)
+                        {
+                            collider.enabled = false;
+                            collider.center = Vector3.zero;
+                            collider.size = new Vector3(Card3D.Width, Card3D.Height, Card3D.Thickness);
+                        }
+                        flightTasks.Add(StartTask(PlaceCard(card, slots[i], rotations[i], (0.48f + i * 0.035f) / speed, i == 0)));
                     }
                     if (!mine)
                         scene.SetFanCount(e.PlayerId, afterCount);
                     Sfx.Play(SfxType.Card);
                     hud.Label(e.PlayerId)?.ShowClaim(e.Count, e.Claim, e.Shielded);
-                    hud.Log(Name(e.PlayerId) + ": " + e.Count + " × " + Theme.ColoredElement(e.Claim) + (e.Shielded ? " (Tameng)" : ""));
+                    hud.Log(Name(e.PlayerId) + ": " + e.Count + " × " + Theme.ColoredElement(e.Claim) + (e.Shielded ? " (Shield)" : ""));
                 };
                 if (mine)
+                {
+                    hand.PreparePlayPacket(e.Cards);
                     yield return hand.PlayPacket(grip, release, speed);
+                }
                 else
-                    yield return character.PlayPacket(scene.PileAnchor.position, grip, release, speed);
+                    yield return character.PlayPacket(PacketDestination(e.PlayerId), grip, release, speed);
                 if (!released)
                     throw new System.InvalidOperationException("Packet animation ended before release.");
                 yield return WaitTasks();
@@ -703,27 +788,32 @@ namespace Bluff.Game
                         {
                             if (packet[i] == null)
                                 continue;
-                            packet[i].transform.SetParent(transform, true);
-                            packet[i].transform.SetPositionAndRotation(slots[i], rotations[i]);
+                            SetPilePose(packet[i], slots[i], rotations[i]);
                         }
                         if (!mine && scene != null)
                             scene.SetFanCount(e.PlayerId, afterCount);
                     }
                 }
                 if (!finished && !resolutionFocus && rig != null)
+                {
+                    rig.ClearFocus();
                     rig.SetActionFocus(false);
+                }
             }
             if (e.Shielded)
             {
                 Fx.Shield(scene.PileAnchor.position + Vector3.up * 0.02f, 0.22f);
+                if (activeShield != null) activeShield.Dismiss();
+                activeShield = TablePowerEffect.Play(transform, scene.PileAnchor.position, PowerType.Tameng,
+                    Cosmetics.EffectForSeat(e.PlayerId, humanId, PowerType.Tameng), Vector3.zero, true);
                 Sfx.Play(SfxType.Power, 0.7f);
-                hud.Toast(Name(e.PlayerId, false) + " memasang Tameng: taruhan ini kebal tembakan!", Theme.Text);
+                hud.Toast(Name(e.PlayerId, false) + " protects this play with Shield!", Theme.Text);
                 yield return Wait(0.6f);
             }
             if (afterCount == 0)
-                hud.Toast(Name(e.PlayerId, false) + " menaruh kartu terakhirnya!", Theme.Text);
+                hud.Toast(Name(e.PlayerId, false) + " plays their last card!", Theme.Text);
             else if (afterCount == 1 && !mine)
-                hud.Toast(Name(e.PlayerId, false) + " tinggal 1 kartu!", Theme.Text);
+                hud.Toast(Name(e.PlayerId, false) + " has 1 card left!", Theme.Text);
         }
 
         IEnumerator TightenPacket(List<Card3D> packet, float duration)
@@ -742,36 +832,123 @@ namespace Bluff.Game
                 {
                     if (packet[i] == null)
                         continue;
-                    packet[i].transform.localPosition = Vector3.Lerp(positions[i], new Vector3(0f, 0f, -i * 0.002f), k);
+                    packet[i].transform.localPosition = Vector3.Lerp(positions[i], new Vector3(0f, 0f, i * 0.002f), k);
                     packet[i].transform.localRotation = Quaternion.Slerp(rotations[i], Quaternion.identity, k);
                 }
             });
         }
 
-        IEnumerator FlyDelayed(Card3D card, Vector3 pos, Quaternion rot, float duration, bool dust)
+        Vector3 PacketDestination(int id)
+        {
+            var outward = scene.SeatDirectionOf(id);
+            var right = Vector3.Cross(Vector3.up, -outward);
+            var destination = scene.PileAnchor.position + outward * 0.72f + right * 0.12f;
+            destination.y = Mathf.Max(TableScene.FeltTop + 0.13f, scene.PileAnchor.position.y + pile.Count * 0.0018f + 0.10f);
+            return destination;
+        }
+
+        IEnumerator PlaceCard(Card3D card, Vector3 pos, Quaternion rot, float duration, bool sound)
         {
             if (card == null)
                 yield break;
-            yield return card.FlyTo(pos, rot, duration, 0.14f, Random.Range(-25f, 25f));
-            if (dust)
-                Fx.CardDust(pos);
-            Sfx.Play(SfxType.Deal, 0.35f);
+            var start = card.transform.position;
+            var startRotation = card.transform.rotation;
+            var startScale = card.transform.lossyScale;
+            card.transform.SetParent(null, true);
+            yield return Tween.Run(duration, t =>
+            {
+                if (card == null)
+                    return;
+                PlacementPose(start, startRotation, startScale, pos, rot, t, out var position, out var rotation, out var scale);
+                card.transform.SetPositionAndRotation(position, rotation);
+                card.transform.localScale = scale;
+            });
+            if (card == null)
+                yield break;
+            SetPilePose(card, pos, rot);
+            if (sound)
+                Sfx.Play(SfxType.Deal, 0.35f);
+        }
+
+        static void PlacementPose(Vector3 start, Quaternion startRotation, Vector3 startScale, Vector3 end, Quaternion endRotation,
+            float progress, out Vector3 position, out Quaternion rotation, out Vector3 scale)
+        {
+            float t = Mathf.Clamp01(progress);
+            var approach = Vector3.ProjectOnPlane(start - end, Vector3.up).normalized;
+            var slideStart = end + approach * 0.024f;
+            slideStart.y += 0.008f;
+            var flatStart = Vector3.Lerp(start, slideStart, 0.14f);
+            flatStart.y = Mathf.Max(start.y, slideStart.y + 0.012f);
+            if (t <= 0.24f)
+            {
+                float k = Mathf.SmoothStep(0f, 1f, t / 0.24f);
+                position = Vector3.Lerp(start, flatStart, k);
+                rotation = Quaternion.Slerp(startRotation, endRotation, k);
+                scale = Vector3.Lerp(startScale, Vector3.one, k);
+            }
+            else if (t <= 0.78f)
+            {
+                float k = Mathf.SmoothStep(0f, 1f, (t - 0.24f) / 0.54f);
+                position = Vector3.Lerp(flatStart, slideStart, k);
+                rotation = endRotation;
+                scale = Vector3.one;
+            }
+            else
+            {
+                float k = Tween.EaseOutCubic((t - 0.78f) / 0.22f);
+                position = Vector3.Lerp(slideStart, end, k);
+                rotation = endRotation;
+                scale = Vector3.one;
+            }
+            float extent = CardVerticalExtent(rotation, scale);
+            float clearance = Mathf.Lerp(0.001f, 0.0003f, Mathf.SmoothStep(0f, 1f, (t - 0.78f) / 0.22f));
+            float support = Mathf.Lerp(TableScene.FeltTop, Mathf.Max(TableScene.FeltTop, end.y - Card3D.Thickness * 0.5f - 0.0003f),
+                Mathf.SmoothStep(0f, 1f, t / 0.24f));
+            position.y = Mathf.Max(position.y, support + extent + clearance);
+        }
+
+        static float CardVerticalExtent(Quaternion rotation, Vector3 scale)
+        {
+            return (Mathf.Abs((rotation * Vector3.right).y * scale.x) * Card3D.Width
+                + Mathf.Abs((rotation * Vector3.up).y * scale.y) * Card3D.Height
+                + Mathf.Abs((rotation * Vector3.forward).y * scale.z) * Card3D.Thickness) * 0.5f;
+        }
+
+        void SetPilePose(Card3D card, Vector3 position, Quaternion rotation)
+        {
+            card.transform.SetParent(null, true);
+            card.transform.SetPositionAndRotation(position, rotation);
+            card.transform.localScale = Vector3.one;
+            card.transform.SetParent(transform, true);
+        }
+
+        static Vector3 PileSlot(Vector3 anchor, int index, out Quaternion rotation)
+        {
+            float yaw = index == 0 ? 0f : (index % 2 == 0 ? -4f : 4f);
+            float x = index == 0 ? 0f : ((index % 3) - 1) * 0.010f;
+            float z = index == 0 ? 0f : (((index / 3) % 3) - 1) * 0.010f;
+            rotation = Quaternion.LookRotation(Vector3.up, Quaternion.Euler(0f, yaw, 0f) * Vector3.forward);
+            return anchor + new Vector3(x, index * (Card3D.Thickness + 0.0003f), z);
         }
 
         Vector3 NextPileSlot(out Quaternion rotation)
         {
-            int i = pile.Count;
-            var offset = Random.insideUnitCircle * 0.075f;
-            var forward = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f) * Vector3.forward;
-            rotation = Quaternion.LookRotation(Vector3.up, forward);
-            return scene.PileAnchor.position + new Vector3(offset.x, i * 0.0017f, offset.y);
+            var slot = PileSlot(scene.PileAnchor.position, pile.Count, out rotation);
+            foreach (var card in pile)
+            {
+                if (card == null)
+                    continue;
+                float top = card.transform.position.y + CardVerticalExtent(card.transform.rotation, card.transform.lossyScale);
+                slot.y = Mathf.Max(slot.y, top + Card3D.Thickness * 0.5f + 0.0003f);
+            }
+            return slot;
         }
 
         IEnumerator PresentPass(GameEvent e)
         {
             hud.Label(e.PlayerId)?.ShowText("Pass", Theme.Muted);
             Sfx.Play(SfxType.Pass);
-            hud.Log(Name(e.PlayerId) + " pass.");
+            hud.Log(Name(e.PlayerId) + " passes.");
             var character = scene.Character(e.PlayerId);
             if (character != null)
                 StartTask(character.Wave(0.7f / Speed));
@@ -783,7 +960,7 @@ namespace Bluff.Game
         Vector3 TargetPoint(int id)
         {
             if (id == humanId)
-                return scene.Camera.transform.position - Vector3.up * 0.12f;
+                return new Vector3(0f,1.14f,-1.38f);
             return scene.Character(id).Head.position + Vector3.up * 0.05f;
         }
 
@@ -817,8 +994,8 @@ namespace Bluff.Game
             bool active = true;
             resolutionFocus = true;
             hud.Label(shooter)?.ShowText("BLUFF!", Theme.Text, 2f / Speed);
-            hud.Log(Name(shooter) + " menembak " + Name(target) + "!");
-            hud.Toast(Name(shooter, false) + " berteriak BLUFF! ke " + Name(target, false), Theme.Text);
+            hud.Log(Name(shooter) + " shoots at " + Name(target) + "!");
+            hud.Toast(Name(shooter, false) + " calls BLUFF! on " + Name(target, false), Theme.Text);
             try
             {
                 yield return CenterView();
@@ -827,6 +1004,9 @@ namespace Bluff.Game
                     if (!active || fired || !isActiveAndEnabled)
                         return;
                     fired = true;
+                    lastShotMuzzle = muzzle;
+                    lastShooter = shooter;
+                    lastShotTarget = target;
                     FireEffects(target, muzzle, forward);
                 };
                 if (shooter == humanId)
@@ -1036,6 +1216,7 @@ namespace Bluff.Game
 
         void ResetPresentation()
         {
+            lastShooter = lastShotTarget = -1;
             pendingShotFire = null;
             ResetFirstPersonShot();
             ReleaseFocus();
@@ -1057,6 +1238,11 @@ namespace Bluff.Game
 
         void OnDisable()
         {
+            if(localEmote!=null){StopCoroutine(localEmote);localEmote=null;}
+            if(rig!=null) rig.EndEmote();
+            if(hand!=null) hand.SuspendInput(false);
+            if(emoteAvatar!=null) emoteAvatar.gameObject.SetActive(false);
+            SetHandVisible(true);
             presentationVersion++;
             try
             {
@@ -1137,7 +1323,7 @@ namespace Bluff.Game
                 }
                 if (shooterCharacter != null)
                     StartTask(shooterCharacter.Caught(1.4f / Speed));
-                hud.Log("JUJUR: " + Name(owner) + " tidak bohong. " + Name(shooter) + " " + Theme.Colored("salah tembak.", Theme.Red));
+                hud.Log("HONEST: " + Name(owner) + " was honest. " + Name(shooter) + " " + Theme.Colored("challenged incorrectly.", Theme.Red));
             }
             else
             {
@@ -1152,7 +1338,7 @@ namespace Bluff.Game
                 }
                 if (shooterCharacter != null)
                     StartTask(shooterCharacter.Proud(1f / Speed));
-                hud.Log(Theme.Colored("BOHONG", Theme.Red) + ": " + Name(owner) + " ketahuan!");
+                hud.Log(Theme.Colored("BLUFF", Theme.Red) + ": " + Name(owner) + " was caught!");
             }
             yield return Wait(1.1f);
         }
@@ -1164,8 +1350,8 @@ namespace Bluff.Game
             int taker = e.PlayerId;
             string who = Name(taker, false);
             string message = e.Partial
-                ? who + " mengambil " + e.Count + " kartu yang dituduh."
-                : who + " mengambil " + e.Count + " kartu dari tumpukan!";
+                ? who + " takes " + e.Count + " challenged cards."
+                : who + " takes " + e.Count + " cards from the pile!";
 
             yield return hud.HideStamp();
             rig.ClearFocus();
@@ -1225,6 +1411,7 @@ namespace Bluff.Game
 
         IEnumerator PresentBurn(GameEvent e)
         {
+            if (activeShield != null) { activeShield.Dismiss(); activeShield = null; }
             resolutionFocus = true;
             yield return CenterView();
             yield return hud.HideStamp();
@@ -1238,7 +1425,7 @@ namespace Bluff.Game
 
             if (!storm)
             {
-                string message = e.Count > 0 ? "Semua pass: " + e.Count + " kartu hangus!" : "Semua pass: ronde selesai.";
+                string message = e.Count > 0 ? "Everyone passed: " + e.Count + " cards burned!" : "Everyone passed. Round over.";
                 hud.Toast(message, Theme.Text);
                 hud.Log(message);
                 Sfx.Play(SfxType.Burn);
@@ -1298,10 +1485,19 @@ namespace Bluff.Game
         IEnumerator PresentPower(GameEvent e)
         {
             int user = e.PlayerId;
+            Vector3 effectPosition = e.Power == PowerType.Bakar ? scene.BurnAnchor.position : scene.PileAnchor.position;
+            if (e.Power == PowerType.Cermin)
+            {
+                // The gun has recovered by this event; reflect from its actual firing position.
+                var muzzle = lastShooter == e.OtherPlayerId && lastShotTarget == user ? lastShotMuzzle : TargetPoint(e.OtherPlayerId);
+                TablePowerEffect.Mirror(transform,TargetPoint(user),TargetPoint(e.OtherPlayerId),muzzle,Cosmetics.EffectForSeat(user,humanId,e.Power),TableScene.FeltTop);
+            }
+            else if (e.Power != PowerType.Tameng && e.Power != PowerType.Hadiah && e.Power != PowerType.Bakar)
+                TablePowerEffect.Play(transform, effectPosition, e.Power, Cosmetics.EffectForSeat(user,humanId,e.Power),
+                    effectPosition);
             knownPowers[user] = e.Power;
-            hud.Toast(Name(user, false) + " memakai " + PowerText.Name(e.Power).ToUpperInvariant() + "!", Theme.Text);
-            hud.Log(Name(user) + " memakai " + PowerText.Name(e.Power) + ".");
-            Sfx.Play(SfxType.Power);
+            hud.Toast(Name(user, false) + " uses " + PowerText.Name(e.Power).ToUpperInvariant() + "!", Theme.Text);
+            hud.Log(Name(user) + " uses " + PowerText.Name(e.Power) + ".");
             StartTask(RevealPowerCard(user, e.Power));
             hud.Label(user)?.SetPower(e.Power, true);
 
@@ -1330,10 +1526,8 @@ namespace Bluff.Game
                 case PowerType.Cermin:
                 {
                     int shooter = e.OtherPlayerId;
-                    var from = user == humanId ? scene.Camera.transform.position + scene.Camera.transform.forward * 0.3f : scene.Character(user).Head.position;
-                    Fx.MirrorFlash(from);
-                    Fx.Tracer(from, TargetPoint(shooter), Color.white);
-                    yield return hud.ShowStamp(false, "PANTUL!");
+                    yield return Wait(1.2f);
+                    yield return hud.ShowStamp(false, "REFLECTED!");
                     if (shooter == humanId)
                         hud.FlashScreen(Color.white, 0.6f);
                     else
@@ -1381,6 +1575,8 @@ namespace Bluff.Game
             for (int i = 0; i < flights.Count; i++)
                 StartTask(FlyAndDestroy(flights[i], () => scene.BurnAnchor.position, duration, i * 0.08f / Speed));
             yield return new WaitForSeconds(duration * 0.8f);
+            TablePowerEffect.Play(transform,scene.BurnAnchor.position,PowerType.Bakar,
+                Cosmetics.EffectForSeat(e.PlayerId,humanId,PowerType.Bakar),scene.BurnAnchor.position);
             Fx.Fire(scene.BurnAnchor.position, 1f, 0.8f);
             Sfx.Play(SfxType.Burn);
             yield return Wait(0.6f);
@@ -1408,11 +1604,13 @@ namespace Bluff.Game
                     () => HandRotation(receiver), () => HandScale(receiver))));
             }
             Fx.Gift(scene.HandPosition(giver));
+            TablePowerEffect.Play(transform, scene.HandPosition(giver), PowerType.Hadiah,
+                Cosmetics.EffectForSeat(giver,humanId,PowerType.Hadiah), HandDestination(receiver));
             yield return WaitTasks(arrivals);
             Fx.Gift(HandDestination(receiver));
             if (receiver == humanId && e.Cards != null)
                 ReceiveCards(e.Cards, true);
-            hud.Log(Name(giver) + " memberi " + e.Count + " kartu kepada " + Name(receiver) + ".");
+            hud.Log(Name(giver) + " gives " + e.Count + " cards to " + Name(receiver) + ".");
         }
 
         IEnumerator PresentPeek(GameEvent e)
@@ -1444,7 +1642,7 @@ namespace Bluff.Game
                     flights.Add(StartTask(views[i].FlyTo(pos, facing, 0.35f / Speed, 0.04f, 0f)));
                 }
                 yield return WaitTasks();
-                hud.Toast(e.Honest ? "Mata Elang: kartunya JUJUR." : "Mata Elang: dia BOHONG!", Theme.Text);
+                hud.Toast(e.Honest ? "Eagle Eye: an HONEST play." : "Eagle Eye: a BLUFF!", Theme.Text);
                 yield return Wait(1.8f);
                 for (int i = 0; i < views.Count; i++)
                 {
@@ -1503,13 +1701,13 @@ namespace Bluff.Game
                 if (id != e.PlayerId && id != humanId)
                     scene.Character(id)?.Defeated();
             }
-            hud.Log(Name(e.PlayerId) + " menang!");
+            hud.Log(Name(e.PlayerId) + " wins!");
             yield return Wait(1.2f);
         }
 
         string Name(int playerId, bool emphasized = true)
         {
-            string n = playerId == humanId ? "Kamu" : names[playerId];
+            string n = playerId == humanId ? "You" : names[playerId];
             return emphasized ? "<b>" + n + "</b>" : n;
         }
 

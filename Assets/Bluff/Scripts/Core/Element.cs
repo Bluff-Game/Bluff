@@ -22,6 +22,21 @@ namespace Bluff.Core
     {
         public const int ClaimableCount = 6;
 
+        public static string Name(Element element)
+        {
+            switch (element)
+            {
+                case Element.Matahari: return "Sun";
+                case Element.Bulan: return "Moon";
+                case Element.Bintang: return "Star";
+                case Element.Petir: return "Lightning";
+                case Element.Air: return "Water";
+                case Element.Daun: return "Leaf";
+                case Element.Topeng: return "Mask";
+                default: return "Unknown";
+            }
+        }
+
         /// <summary>Elemen yang boleh diklaim (semua kecuali Topeng), urut sesuai nilai enum.</summary>
         public static readonly IReadOnlyList<Element> Claimable = Array.AsReadOnly(new[]
         {

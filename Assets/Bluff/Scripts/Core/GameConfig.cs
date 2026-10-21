@@ -33,7 +33,7 @@ namespace Bluff.Core
         public void Validate()
         {
             if (PlayerCount < 2 || PlayerCount > 6)
-                throw new ArgumentOutOfRangeException(nameof(PlayerCount), "Jumlah pemain harus 2-6.");
+                throw new ArgumentOutOfRangeException(nameof(PlayerCount), "Player count must be 2-6.");
             if (CopiesPerElement < 1)
                 throw new ArgumentOutOfRangeException(nameof(CopiesPerElement));
             if (WildCount < 0)
@@ -43,7 +43,7 @@ namespace Bluff.Core
             if (MaxCardsPerPlay < 1)
                 throw new ArgumentOutOfRangeException(nameof(MaxCardsPerPlay));
             if (TotalCards < PlayerCount)
-                throw new ArgumentException("Kartu tidak cukup untuk semua pemain.");
+                throw new ArgumentException("Not enough cards for all players.");
         }
     }
 }

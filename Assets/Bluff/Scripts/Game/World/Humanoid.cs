@@ -12,6 +12,7 @@ namespace Bluff.Game
         Cap,
         Crown,
         Bandana,
+        Fedora,
     }
 
     /// <summary>Warna &amp; aksesori satu karakter.</summary>
@@ -20,6 +21,11 @@ namespace Bluff.Game
         public Color Shirt;
         public Color Skin;
         public Color Pants;
+        public Color Shoes;
+        public int ShoeStyle;
+        public int Eyewear;
+        public int JacketStyle;
+        public int TrouserStyle;
         public Color Mask;
         public Color Hat;
         public Color Hair;
@@ -36,6 +42,7 @@ namespace Bluff.Game
                 Shirt = Color.Lerp(color, Color.black, 0.25f),
                 Skin = Skins[playerId % Skins.Length],
                 Pants = Theme.Hex("2A2F3D"),
+                Shoes = Theme.Hex("252020"),
                 Mask = playerId % 2 == 0 ? Theme.Gold : Theme.Hex("E8E6F0"),
                 Hat = Color.Lerp(color, Color.black, 0.55f),
                 Hair = Theme.Hex("2B1B12"),
@@ -50,6 +57,8 @@ namespace Bluff.Game
         const float Forearm = 0.25f;
         const float Thigh = 0.42f;
         const float Shin = 0.42f;
+        // Keep the wrist and its fingers above the felt when a bot is seated.
+        const float SeatedHandClearance = 0.135f;
 
         public enum ArmMode
         {
@@ -92,6 +101,8 @@ namespace Bluff.Game
         bool seated;
         float phase;
         float blinkTimer = 2f;
+        float reactionUntil;
+        int reaction;
         float maskFlash;
         Color maskFlashColor;
 
@@ -114,6 +125,33 @@ namespace Bluff.Game
         Quaternion wristRRotation;
         readonly Transform[] fingersL = new Transform[5];
         readonly Transform[] fingersR = new Transform[5];
+        Transform cardFingersL, cardFingersR, cardThumbL, cardThumbR;
+        Material cardSkin, cardNails;
+        static readonly Vector3 GripPalmOffset = new Vector3(0f, -0.034f, 0.038f);
+        static readonly Vector3 CardPalmOffset = new Vector3(0f, -0.034f, 0.045f);
+        Transform trackedGrip;
+        int trackedGripGeneration;
+        float trackedGripWeight;
+        float trackedFingerWeight;
+        Vector3 trackedStartPosition;
+        Quaternion trackedStartRotation;
+        bool standingLocomotion;
+        bool feetInitialized;
+        Vector3 previousRootPosition;
+        Quaternion previousRootRotation;
+        Vector3 footPositionL;
+        Vector3 footPositionR;
+        Quaternion footRotationL;
+        Quaternion footRotationR;
+        Vector3 stepOrigin;
+        Vector3 stepDestination;
+        Quaternion stepRotation;
+        float stepTime;
+        float stepDuration;
+        int steppingFoot;
+        float stridePhase;
+        Transform shoeL;
+        Transform shoeR;
 
         enum HandAction { None, Packet, Shot, Recoil }
 
@@ -156,6 +194,8 @@ namespace Bluff.Game
         float shotWeight;
         float gripR;
         float gripRTarget;
+        int heldCardCount;
+        bool cardGripBuilt;
         Vector3 releaseWrist;
         Vector3 pinchPosition;
         Quaternion pinchRotation;
@@ -167,6 +207,7 @@ namespace Bluff.Game
         public Transform RightHand => handR;
         public Transform Muzzle => muzzle;
         public HumanoidStyle Style { get; private set; }
+        public bool PreviewAnimation { get; set; }
 
         public static Humanoid Create(Transform parent, string name, HumanoidStyle style, bool seated)
         {
@@ -229,6 +270,7 @@ namespace Bluff.Game
                 }, jacket, 0.9f);
             foreach (var elbow in new[] { elbowL, elbowR })
             {
+                Art.Primitive(PrimitiveType.Sphere,"Elbow seam",elbow,Vector3.zero,new Vector3(.098f,.10f,.098f),jacket);
                 Loft("SleeveForearm", elbow, Vector3.zero, new[]
                 {
                     new Vector4(0.035f, -Forearm + 0.013f, 0.036f, 0f),
@@ -274,11 +316,17 @@ namespace Bluff.Game
                     new Vector3(0f, -0.32f, 0.048f), new Vector3(0f, -0.395f, 0.049f),
                 }, 0.0012f, pants, 6);
                 BuildShoe(knee);
+                if(style.TrouserStyle==4)
+                    for(int stripe=-2;stripe<=2;stripe++) Art.Tube("Pinstripe",knee,new[]{new Vector3(stripe*.016f,-.03f,.062f),new Vector3(stripe*.016f,-.36f,.05f)},.0009f,Art.Fabric(Theme.Hex("929287")),5);
+                if(style.TrouserStyle==6)
+                    Art.BeveledBox("Turn-up cuff",knee,new Vector3(0,-.36f,0),new Vector3(.104f,.035f,.103f),.006f,pants);
+                if(style.TrouserStyle==7)
+                    for(int side=-1;side<=1;side+=2) Art.Tube("Satin side stripe",knee,new[]{new Vector3(side*.058f,-.02f,0),new Vector3(side*.05f,-.37f,0)},.006f,Art.Fabric(Theme.GoldDark),6);
             }
 
-            CardHold = Joint("CardHold", handL, new Vector3(0.024f, -0.04f, 0.054f));
+            CardHold = Joint("CardHold", handL, new Vector3(0.024f, -0.01f, 0.054f));
             CardHold.localRotation = Quaternion.Inverse(LeftWrist) * FanRotation;
-            PlayHold = Joint("PlayHold", handR, new Vector3(-0.024f, -0.04f, 0.054f));
+            PlayHold = Joint("PlayHold", handR, new Vector3(-0.024f, -0.01f, 0.054f));
             PlayHold.localRotation = Quaternion.Inverse(RightWrist) * FanRotation;
             BuildGun();
             BatchVisuals();
@@ -376,6 +424,22 @@ namespace Bluff.Game
                 new Vector3(-0.012f, -0.126f, 0.122f),
             }, 0.0012f, facing, 6);
             Art.BeveledBox("BreastPocket", chest, new Vector3(-0.127f, 0.06f, 0.112f), new Vector3(0.044f, 0.009f, 0.01f), 0.002f, facing);
+            if(Style.JacketStyle==4)
+                for(int side=-1;side<=1;side+=2) Panel("Coat tail",spine,new[]{new Vector3(side*.02f,.02f,-.12f),new Vector3(side*.15f,.02f,-.11f),new Vector3(side*.12f,-.24f,-.13f),new Vector3(side*.04f,-.27f,-.14f)},.012f,jacket);
+            if(Style.JacketStyle==5)
+                for(int side=-1;side<=1;side+=2)
+                {
+                    Art.BeveledBox("Officer epaulette",chest,new Vector3(side*.16f,.16f,0),new Vector3(.09f,.018f,.13f),.006f,buttons);
+                    for(int row=0;row<3;row++) Button("Officer button",chest,new Vector3(side*.044f,.08f-row*.065f,.135f),.008f,buttons);
+                }
+            if(Style.JacketStyle==6)
+                for(int side=-1;side<=1;side+=2) Panel("Duelist sash",chest,new[]{new Vector3(side*.035f,-.10f,.148f),new Vector3(side*.07f,-.10f,.149f),new Vector3(side*.15f,.13f,.125f),new Vector3(side*.12f,.14f,.126f)},.004f,Art.Fabric(Theme.Hex("C6A45B")));
+            if(Style.JacketStyle==7)
+                for(int side=-1;side<=1;side+=2)
+                {
+                    Art.Tube("Velvet shawl lapel",chest,new[]{new Vector3(side*.08f,.18f,.11f),new Vector3(side*.095f,.08f,.14f),new Vector3(side*.035f,-.065f,.145f)},.018f,Art.Fabric(Theme.Hex("161C19")),10);
+                    Art.Tube("Gold piping",chest,new[]{new Vector3(side*.10f,.17f,.124f),new Vector3(side*.112f,.08f,.15f),new Vector3(side*.05f,-.065f,.155f)},.002f,buttons,6);
+                }
         }
 
         void BuildHead(HumanoidStyle style, Material skin)
@@ -419,7 +483,8 @@ namespace Bluff.Game
                 new Vector3(0f, 0.036f, 0.103f), new Vector3(0.012f, 0.035f, 0.101f),
                 new Vector3(0.025f, 0.037f, 0.094f),
             }, 0.0018f, crease, 6);
-            BuildMask();
+            if (style.Eyewear == 0) BuildMask();
+            else if (style.Eyewear != 3) BuildGlasses(style.Eyewear == 2);
             var eyes = Art.Lit(Theme.Hex("191C20"), 0.72f);
             eyeL = Art.Primitive(PrimitiveType.Sphere, "EyeL", head, new Vector3(-0.05f, 0.13f, 0.109f), new Vector3(0.05f, 0.032f, 0.02f), eyes).transform;
             eyeR = Art.Primitive(PrimitiveType.Sphere, "EyeR", head, new Vector3(0.05f, 0.13f, 0.109f), new Vector3(0.05f, 0.032f, 0.02f), eyes).transform;
@@ -431,6 +496,27 @@ namespace Bluff.Game
         static Vector3 MaskPoint(float x, float y)
         {
             return new Vector3(x, y, 0.14f - 2.1f * x * x - 0.2f * (y - 0.13f) * (y - 0.13f));
+        }
+
+        void BuildGlasses(bool smoked)
+        {
+            var frame = Art.Metal(smoked ? Theme.Hex("38352E") : Theme.Gold, .7f);
+            var lens = Art.Lit(Theme.Hex("22362F"), .9f, .25f);
+            foreach (int side in new[] { -1, 1 })
+            {
+                if (Style.Eyewear == 4 && side == 1) continue;
+                var circle = new Vector3[33];
+                for (int i = 0; i < circle.Length; i++)
+                {
+                    float a = i * Mathf.PI * 2f / 32;
+                    circle[i] = new Vector3(side * .052f + Mathf.Cos(a) * .039f, .132f + Mathf.Sin(a) * .033f, .14f);
+                }
+                Art.Tube("Spectacle rim", head, circle, .003f, frame, 8);
+                if(Style.Eyewear!=4) Art.Tube("Spectacle arm", head, new[] { new Vector3(side * .09f,.132f,.14f), new Vector3(side * .122f,.132f,.06f), new Vector3(side * .12f,.12f,-.03f) }, .0025f, frame, 8);
+                if (smoked) Art.Primitive(PrimitiveType.Sphere, "Smoked lens", head, new Vector3(side * .052f,.132f,.14f), new Vector3(.074f,.061f,.008f), lens);
+            }
+            if(Style.Eyewear==4) Art.Tube("Monocle chain",head,new[]{new Vector3(-.09f,.13f,.14f),new Vector3(-.11f,.03f,.14f),new Vector3(-.08f,-.05f,.10f)},.0015f,frame,6);
+            else Art.Tube("Spectacle bridge", head, new[] { new Vector3(-.014f,.138f,.141f),new Vector3(0f,.148f,.145f),new Vector3(.014f,.138f,.141f) }, .003f, frame, 8);
         }
 
         void BuildMask()
@@ -494,6 +580,7 @@ namespace Bluff.Game
 
         void BuildHand(Transform hand, float thumbSide, Material skin, Color skinColor)
         {
+            Art.Primitive(PrimitiveType.Sphere,"Wrist joint",hand,Vector3.zero,new Vector3(.047f,.045f,.047f),skin);
             Loft("Palm", hand, Vector3.zero, new[]
             {
                 new Vector4(0.026f, -0.041f, 0.018f, 0.006f), new Vector4(0.035f, -0.028f, 0.022f, 0.005f),
@@ -531,6 +618,85 @@ namespace Bluff.Game
             }, new[] { 0.014f, 0.012f, 0.009f, 0.0065f }, skin);
             var thumbnail = Art.BeveledBox("Thumbnail", thumb, thumbTip - thumbRoot + new Vector3(0f, 0f, 0.006f), new Vector3(0.01f, 0.012f, 0.002f), 0.001f, nails);
             thumbnail.transform.localRotation = Quaternion.Euler(0f, 0f, thumbSide * 35f);
+            var cardFingers = Joint("Card grip fingers",hand,Vector3.zero);
+            if (hand == handL) cardFingersL=cardFingers; else cardFingersR=cardFingers;
+            for (int i=0;i<4;i++)
+            {
+                float x=thumbSide*(.025f-i*.017f), y=-.03f-i*.003f;
+                var tip=new Vector3(x,y-.014f,.0386f);
+                CardDigit("Curled card finger "+i,cardFingers,new[]{new Vector3(x,y,.012f),
+                    new Vector3(x,y-.021f,.019f),new Vector3(x,y-.026f,.030f),tip},
+                    new[]{.009f,.008f,.007f,.0055f},skin);
+                Art.BeveledBox("Grip nail",cardFingers,tip-Vector3.forward*.005f,new Vector3(.009f,.011f,.002f),.001f,nails);
+            }
+            cardFingers.gameObject.SetActive(false);
+            var cardThumb=Joint("Card grip thumb",hand,Vector3.zero);
+            if(hand==handL) cardThumbL=cardThumb; else cardThumbR=cardThumb;
+            cardSkin=skin;cardNails=nails;
+            cardThumb.gameObject.SetActive(false);
+        }
+
+        void FitCardThumb(Transform thumb, bool left, int count)
+        {
+            foreach(Transform child in thumb)
+            {
+                foreach(var filter in child.GetComponentsInChildren<MeshFilter>())
+                    if(meshes.Remove(filter.sharedMesh)) Destroy(filter.sharedMesh);
+                child.gameObject.SetActive(false);Destroy(child.gameObject);
+            }
+            if(count==0) return;
+            float side=left?1f:-1f;
+            float support=Mathf.Min(.022f,(count-1)*.003f);
+            var rotation=Quaternion.Inverse(left?LeftWrist:RightWrist)*FanRotation;
+            var origin=CardPalmOffset+rotation*new Vector3(left?support:-support,.015f,0f);
+            float spread=Mathf.Min(64f,5.5f*(count-1));
+            float pinchX=left?-support+.014f:support-.014f;
+            float bottom=float.PositiveInfinity,frontBottom=0f;
+            // Find the lower silhouette in fan space, keeping the thumb route short and anatomical.
+            for(int card=0;card<count;card++)
+            {
+                var r=Quaternion.Euler(0,0,Mathf.Lerp(spread*.5f,-spread*.5f,count==1?.5f:card/(float)(count-1)));
+                var corners=new Vector3[4];
+                for(int k=0;k<4;k++) corners[k]=r*new Vector3(k==0||k==3?-.0425f:.0425f,.078f+(k<2?-.0595f:.0595f),0)+new Vector3(0,-.025f,0);
+                float cardBottom=float.PositiveInfinity;
+                for(int k=0;k<4;k++)
+                {
+                    var a=corners[k];var b=corners[(k+1)%4];
+                    foreach(float x in new[]{pinchX-.010f,pinchX,pinchX+.010f})
+                        if((a.x-x)*(b.x-x)<0f) cardBottom=Mathf.Min(cardBottom,Mathf.Lerp(a.y,b.y,(x-a.x)/(b.x-a.x)));
+                }
+                bottom=Mathf.Min(bottom,cardBottom);
+                if(card==count-1) frontBottom=cardBottom;
+            }
+            if(float.IsInfinity(bottom) || float.IsInfinity(frontBottom)) return;
+            float front=.045f+(count-1)*.0005f+.0068f;
+            var contact=origin+rotation*new Vector3(pinchX,frontBottom+.022f,0f);contact.z=front;
+            var under=origin+rotation*new Vector3(pinchX,bottom-.014f,0f);
+            var back=under;back.z=.021f;
+            under.z=front+.003f;
+            CardDigit("Pinching thumb",thumb,new[]{new Vector3(side*.022f,-.016f,.004f),back,under,contact},
+                new[]{.014f,.011f,.008f,.0065f},cardSkin);
+            Art.BeveledBox("Card thumbnail",thumb,contact+Vector3.forward*.006f,new Vector3(.010f,.012f,.002f),.001f,cardNails);
+        }
+
+        void CardDigit(string name,Transform parent,Vector3[] controls,float[] radii,Material material)
+        {
+            // Round each knuckle while keeping the curve inside the clearance corridor.
+            var path=new List<Vector3> {controls[0]};
+            var widths=new List<float> {radii[0]};
+            for(int i=1;i<controls.Length-1;i++)
+            {
+                var start=Vector3.Lerp(controls[i-1],controls[i],.75f);
+                var end=Vector3.Lerp(controls[i],controls[i+1],.25f);
+                for(int step=0;step<=4;step++)
+                {
+                    float t=step/4f;
+                    path.Add(Vector3.Lerp(Vector3.Lerp(start,controls[i],t),Vector3.Lerp(controls[i],end,t),t));
+                    widths.Add(Mathf.Lerp(Mathf.Lerp(radii[i-1],radii[i],.75f),Mathf.Lerp(radii[i],radii[i+1],.25f),t));
+                }
+            }
+            path.Add(controls[controls.Length-1]);widths.Add(radii[radii.Length-1]);
+            Finger(name,parent,path.ToArray(),widths.ToArray(),material);
         }
 
         void Finger(string name, Transform parent, Vector3[] points, float[] radii, Material material)
@@ -567,11 +733,15 @@ namespace Bluff.Game
 
         void BuildShoe(Transform knee)
         {
-            var leather = Art.Leather(Theme.Hex("252020"));
+            var leather = Art.Leather(Style.Shoes);
             var sole = Art.Leather(Theme.Hex("100F13"));
             var welt = Art.Leather(Theme.Hex("4C3C2E"));
             var lace = Art.Fabric(Theme.Hex("141417"));
             var shoe = Joint("OxfordShoe", knee, new Vector3(0f, -Shin - 0.048f, 0f));
+            if (knee == kneeL)
+                shoeL = shoe;
+            else
+                shoeR = shoe;
             Loft("Outsole", shoe, Vector3.zero, new[]
             {
                 new Vector4(0.046f, 0f, 0.101f, 0.047f), new Vector4(0.053f, 0.004f, 0.108f, 0.047f),
@@ -588,6 +758,18 @@ namespace Bluff.Game
                 new Vector4(0.036f, 0.081f, 0.04f, 0f),
             }, leather, 0.78f);
             Art.BeveledBox("Heel", shoe, new Vector3(0f, 0.003f, -0.027f), new Vector3(0.088f, 0.016f, 0.059f), 0.006f, sole);
+            if (Style.ShoeStyle == 1)
+                Art.BeveledBox("Silver buckle", shoe, new Vector3(0f,.075f,.027f), new Vector3(.047f,.009f,.023f), .003f, Art.Metal(Theme.Hex("BFC8C4")));
+            if (Style.ShoeStyle == 3)
+                Art.BeveledBox("Spat ankle", shoe, new Vector3(0f,.096f,0f), new Vector3(.076f,.064f,.073f), .008f, Art.Fabric(Style.Shoes));
+            if(Style.ShoeStyle==4 || Style.ShoeStyle==5)
+                Loft("Boot upper",shoe,new Vector3(0,.065f,0),new[]{new Vector4(.046f,0,.055f,0),new Vector4(.048f,Style.ShoeStyle==4?.24f:.085f,.052f,0)},leather,.8f);
+            if(Style.ShoeStyle==5)
+                Art.BeveledBox("Canvas toe cap",shoe,new Vector3(0,.047f,.12f),new Vector3(.08f,.028f,.067f),.012f,Art.Fabric(Theme.Hex("E6DDC5")));
+            if(Style.ShoeStyle==6)
+                Art.BeveledBox("Brogue saddle",shoe,new Vector3(0,.062f,.058f),new Vector3(.088f,.017f,.052f),.009f,Art.Leather(Theme.Hex("382A23")));
+            if(Style.ShoeStyle==7)
+                for(int side=-1;side<=1;side+=2) Art.Tube("Loafer tassel",shoe,new[]{new Vector3(side*.012f,.084f,.028f),new Vector3(side*.019f,.073f,.056f),new Vector3(side*.015f,.064f,.075f)},.006f,leather,8);
             Art.Tube("ToeCapSeam", shoe, new[]
             {
                 new Vector3(-0.046f, 0.027f, 0.09f), new Vector3(-0.036f, 0.047f, 0.088f),
@@ -613,6 +795,12 @@ namespace Bluff.Game
             var band = Art.Metal(Theme.Hex("A89059"), 0.4f);
             switch (style.HatStyle)
             {
+                case HatStyle.Fedora:
+                    Loft("Fedora brim",head,new Vector3(0,.23f,-.012f),new[]{new Vector4(.19f,0,.17f,0),new Vector4(.19f,.012f,.17f,0)},hat);
+                    Loft("Fedora crown",head,new Vector3(0,.24f,-.012f),new[]{new Vector4(.12f,0,.116f,0),new Vector4(.105f,.085f,.105f,-.008f),new Vector4(.077f,.12f,.085f,-.01f)},hat);
+                    Loft("Fedora band",head,new Vector3(0,.252f,-.012f),new[]{new Vector4(.12f,0,.116f,0),new Vector4(.115f,.024f,.112f,0)},ribbon);
+                    Art.Tube("Crown crease",head,new[]{new Vector3(0,.359f,-.08f),new Vector3(0,.346f,0),new Vector3(0,.359f,.06f)},.006f,ribbon,8);
+                    break;
                 case HatStyle.TopHat:
                     Loft("BoundBrim", head, new Vector3(0f, 0.231f, -0.014f), new[]
                     {
@@ -897,6 +1085,13 @@ namespace Bluff.Game
         void BatchVisuals()
         {
             var anchors = new List<Transform> { hips, spine, chest, neck, head, shoulderL, shoulderR, elbowL, elbowR, handL, handR, hipL, hipR, kneeL, kneeR };
+            anchors.Add(cardFingersL); anchors.Add(cardFingersR);
+            anchors.Add(cardThumbL); anchors.Add(cardThumbR);
+            if (!seated)
+            {
+                anchors.Add(shoeL);
+                anchors.Add(shoeR);
+            }
             anchors.AddRange(fingersL);
             anchors.AddRange(fingersR);
             foreach (var anchor in anchors)
@@ -967,6 +1162,39 @@ namespace Bluff.Game
 
         public void HoldCards() => SetArmMode(ArmMode.HoldCards);
 
+        bool Reacting => Time.time < reactionUntil && action == HandAction.None && armMode == ArmMode.HoldCards;
+        public void React(int value, Vector3 recipient)
+        {
+            if(action!=HandAction.None || armMode!=ArmMode.HoldCards) return;
+            reaction=value;reactionUntil=Time.time+2.45f;LookAt(recipient);
+        }
+
+        public void SetPortraitPose()
+        {
+            SetArmMode(ArmMode.Rest);
+            handsInitialized = false;
+            UpdateArms(0f);
+            UpdateGrip(1f);
+        }
+
+        public void SetHeldCardCount(int count)
+        {
+            count = Mathf.Max(0, count);
+            if (cardGripBuilt && heldCardCount == count) return;
+            cardGripBuilt = true;
+            heldCardCount = count;
+            float support = Mathf.Min(0.022f, Mathf.Max(0, count - 1) * 0.003f);
+            CardHold.localPosition = CardPalmOffset + CardHold.localRotation * new Vector3(support, 0.015f, 0f);
+            FitCardThumb(cardThumbL,true,heldCardCount);FitCardThumb(cardThumbR,false,heldCardCount);
+        }
+
+        Vector3 CardWristPosition()
+        {
+            // The fan stays centred on the torso as the left hand supports its lower edge.
+            return chest.TransformPoint(new Vector3(0f, 0.135f, 0.30f))
+                - transform.rotation * LeftWrist * CardHold.localPosition;
+        }
+
         public void SetArmMode(ArmMode mode)
         {
             CancelAction();
@@ -983,6 +1211,9 @@ namespace Bluff.Game
         void CancelAction()
         {
             poseGeneration++;
+            trackedGrip = null;
+            trackedGripGeneration = 0;
+            trackedGripWeight = trackedFingerWeight = 0f;
             action = HandAction.None;
             gripCallback = null;
             releaseCallback = null;
@@ -1017,12 +1248,12 @@ namespace Bluff.Game
 
         public void SetWalking(float speed)
         {
-            walkSpeed = Mathf.Max(0f, speed);
+            walkSpeed = float.IsNaN(speed) || float.IsInfinity(speed) ? 0f : Mathf.Max(0f, speed);
             ArmMode locomotion = walkSpeed > 0f ? ArmMode.Walk : ArmMode.Rest;
-            if (action == HandAction.None && armMode != locomotion
+            if (action == HandAction.None && trackedGripGeneration == 0 && armMode != locomotion
                 && (armMode == ArmMode.Walk || armMode == ArmMode.Rest || armMode == ArmMode.HoldCards))
                 SetArmMode(locomotion);
-            if (walkSpeed <= 0f && !seated)
+            if (walkSpeed <= 0f && !seated && !standingLocomotion)
             {
                 hipL.localRotation = Quaternion.identity;
                 hipR.localRotation = Quaternion.identity;
@@ -1030,6 +1261,78 @@ namespace Bluff.Game
                 kneeR.localRotation = Quaternion.identity;
                 hips.localRotation = Quaternion.identity;
             }
+        }
+
+        public bool CanTrackGrip(Transform target)
+        {
+            if (this == null || !isActiveAndEnabled || seated || target == null || shoulderR == null
+                || !IsFinite(target.position) || !IsFinite(target.rotation))
+                return false;
+            Vector3 wrist = target.position - target.rotation * GripPalmOffset;
+            float distance = Vector3.Distance(shoulderR.position, wrist);
+            return distance >= 0.06f && distance <= UpperArm + Forearm - 0.02f;
+        }
+
+        public int BeginGripTracking(Transform target)
+        {
+            if (!CanTrackGrip(target) || action != HandAction.None || armMode == ArmMode.Aim)
+                return 0;
+            SetArmMode(ArmMode.Rest);
+            trackedGrip = target;
+            trackedGripGeneration = poseGeneration;
+            trackedStartPosition = chest.InverseTransformPoint(handR.position);
+            trackedStartRotation = Quaternion.Inverse(transform.rotation) * handR.rotation;
+            LookAt(target.position);
+            return trackedGripGeneration;
+        }
+
+        public bool SetTrackedGrip(int generation, float weight, float fingers)
+        {
+            if (generation == 0 || !OwnsPose(generation) || generation != trackedGripGeneration
+                || !IsFinite(new Vector3(weight, fingers, 0f)))
+                return false;
+            if (!CanTrackGrip(trackedGrip))
+            {
+                EndGripTracking(generation);
+                return false;
+            }
+            trackedGripWeight = Mathf.Clamp01(weight);
+            trackedFingerWeight = Mathf.Clamp01(fingers);
+            LookAt(trackedGrip.position);
+            return true;
+        }
+
+        public bool HasGripContact(int generation)
+        {
+            return generation != 0 && OwnsPose(generation) && generation == trackedGripGeneration
+                && CanTrackGrip(trackedGrip) && trackedGripWeight >= 0.999f && gripR >= 0.98f
+                && Vector3.Distance(handR.TransformPoint(GripPalmOffset), trackedGrip.position) <= 0.008f
+                && Quaternion.Angle(handR.rotation, trackedGrip.rotation) <= 2f;
+        }
+
+        public void EndGripTracking(int generation)
+        {
+            if (generation != 0 && OwnsPose(generation) && generation == trackedGripGeneration)
+                SetArmMode(walkSpeed > 0f ? ArmMode.Walk : ArmMode.Rest);
+        }
+
+        public void SetStandingLocomotionPose(Vector3 position, Quaternion rotation)
+        {
+            if (this == null || !isActiveAndEnabled || seated || !IsFinite(position) || !IsFinite(rotation))
+                return;
+            if (!standingLocomotion)
+            {
+                standingLocomotion = true;
+                previousRootPosition = transform.position;
+                previousRootRotation = transform.rotation;
+            }
+            transform.SetPositionAndRotation(position, rotation);
+        }
+
+        static bool IsFinite(Quaternion value)
+        {
+            return IsFinite(new Vector3(value.x, value.y, value.z)) && !float.IsNaN(value.w)
+                && !float.IsInfinity(value.w) && value.x * value.x + value.y * value.y + value.z * value.z + value.w * value.w > 0.0001f;
         }
 
         public IEnumerator PlayPacket(Vector3 destination, System.Action onGrip, System.Action onRelease, float speed)
@@ -1180,7 +1483,7 @@ namespace Bluff.Game
 
         void LateUpdate()
         {
-            float dt = Time.deltaTime;
+            float dt = PreviewAnimation ? Time.unscaledDeltaTime : Time.deltaTime;
             if (dt <= 0f || chest == null)
                 return;
             if (action == HandAction.Shot && shotTarget != null)
@@ -1211,12 +1514,23 @@ namespace Bluff.Game
             slump = Mathf.Lerp(slump, slumpTarget, 1f - Mathf.Exp(-6f * dt));
             bounce = Mathf.MoveTowards(bounce, 0f, dt * 2f);
 
-            if (walkSpeed > 0f)
+            if (standingLocomotion && !seated)
+                UpdateStandingLocomotion(dt);
+            else if (walkSpeed > 0f)
                 UpdateWalk(dt);
             else
                 UpdateSeatedBody();
 
             UpdateHead(dt);
+            head.localRotation = Quaternion.identity;
+            if (Reacting)
+            {
+                float amount=Mathf.Clamp01((reactionUntil-Time.time)*2f);
+                var toward=transform.InverseTransformDirection(lookTarget-transform.position);
+                float turn=Mathf.Clamp(Mathf.Atan2(toward.x,toward.z)*Mathf.Rad2Deg,-18f,18f);
+                spine.localRotation *= Quaternion.Euler(Mathf.Sin(Time.time*(reaction==0?19f:6f))*amount*(reaction==0?4f:1.5f),turn*amount,0f);
+                head.localRotation = Quaternion.Euler((reaction==0?-6f:Mathf.Sin(Time.time*7f)*7f)*amount,0f,0f);
+            }
             UpdateArms(dt);
             UpdateGrip(dt);
             UpdateFace(dt);
@@ -1368,6 +1682,92 @@ namespace Bluff.Game
             kneeR.localRotation = Quaternion.Euler(Mathf.Max(0f, Mathf.Sin(t + 1.2f + Mathf.PI)) * 50f, 0f, 0f);
         }
 
+        void UpdateStandingLocomotion(float dt)
+        {
+            Vector3 movement = Vector3.ProjectOnPlane(transform.position - previousRootPosition, Vector3.up);
+            float turn = Quaternion.Angle(previousRootRotation, transform.rotation);
+            float speed = movement.magnitude / dt;
+            previousRootPosition = transform.position;
+            previousRootRotation = transform.rotation;
+            SetWalking(speed);
+            stridePhase += movement.magnitude * 9f + turn * Mathf.Deg2Rad;
+            Vector3 desiredL = transform.TransformPoint(new Vector3(-0.09f, 0f, 0f));
+            Vector3 desiredR = transform.TransformPoint(new Vector3(0.09f, 0f, 0f));
+            desiredL.y = desiredR.y = transform.position.y + 0.008f;
+            if (!feetInitialized)
+            {
+                footPositionL = desiredL;
+                footPositionR = desiredR;
+                footRotationL = footRotationR = transform.rotation;
+                feetInitialized = true;
+            }
+            if (steppingFoot == 0)
+            {
+                float errorL = Vector3.Distance(footPositionL, desiredL) + Quaternion.Angle(footRotationL, transform.rotation) * 0.0015f;
+                float errorR = Vector3.Distance(footPositionR, desiredR) + Quaternion.Angle(footRotationR, transform.rotation) * 0.0015f;
+                float threshold = speed > 0.01f || turn > 0.1f ? 0.08f : 0.025f;
+                if (Mathf.Max(errorL, errorR) > threshold)
+                {
+                    steppingFoot = errorL >= errorR ? -1 : 1;
+                    stepOrigin = steppingFoot < 0 ? footPositionL : footPositionR;
+                    stepDuration = Mathf.Clamp(0.16f / Mathf.Max(0.8f, speed), 0.07f, 0.22f);
+                    stepDestination = (steppingFoot < 0 ? desiredL : desiredR) + movement.normalized * Mathf.Min(0.16f, speed * stepDuration * 0.72f);
+                    stepRotation = transform.rotation;
+                    stepTime = 0f;
+                }
+            }
+            if (steppingFoot != 0)
+            {
+                stepTime = Mathf.Min(stepDuration, stepTime + dt);
+                float t = stepTime / stepDuration;
+                float blend = t * t * (3f - 2f * t);
+                Vector3 foot = Vector3.Lerp(stepOrigin, stepDestination, blend) + Vector3.up * (Mathf.Sin(t * Mathf.PI) * 0.065f);
+                if (steppingFoot < 0)
+                {
+                    footPositionL = foot;
+                    footRotationL = Quaternion.Slerp(footRotationL, stepRotation, blend);
+                }
+                else
+                {
+                    footPositionR = foot;
+                    footRotationR = Quaternion.Slerp(footRotationR, stepRotation, blend);
+                }
+                if (t >= 1f)
+                    steppingFoot = 0;
+            }
+            float activity = Mathf.Clamp01(speed);
+            float hipHeight = 0.86f + Mathf.Abs(Mathf.Sin(stridePhase)) * 0.008f * activity;
+            hipHeight = Mathf.Min(hipHeight, StandingHipHeight(footPositionL, -0.09f), StandingHipHeight(footPositionR, 0.09f));
+            hips.localPosition = new Vector3(0f, hipHeight, 0f);
+            hips.localRotation = Quaternion.identity;
+            spine.localRotation = Quaternion.Euler(lean * 14f + slump * 18f + activity * 2f, 0f, 0f);
+            chest.localRotation = Quaternion.Euler(slump * 10f, 0f, 0f);
+            SolveStandingLeg(hipL, kneeL, shoeL, footPositionL, footRotationL);
+            SolveStandingLeg(hipR, kneeR, shoeR, footPositionR, footRotationR);
+        }
+
+        float StandingHipHeight(Vector3 foot, float side)
+        {
+            Vector3 horizontal = Vector3.ProjectOnPlane(foot - transform.TransformPoint(new Vector3(side, 0f, 0f)), Vector3.up);
+            float reach = Thigh + Shin - 0.003f;
+            float height = Mathf.Sqrt(Mathf.Max(0.01f, reach * reach - horizontal.sqrMagnitude));
+            return foot.y - transform.position.y + 0.088f + height;
+        }
+
+        void SolveStandingLeg(Transform hip, Transform knee, Transform shoe, Vector3 foot, Quaternion rotation)
+        {
+            Vector3 ankle = foot + Vector3.up * 0.048f;
+            Vector3 delta = ankle - hip.position;
+            float distance = Mathf.Clamp(delta.magnitude, 0.05f, Thigh + Shin - 0.002f);
+            Vector3 direction = delta.normalized;
+            Vector3 bend = Vector3.ProjectOnPlane(transform.forward, direction).normalized;
+            float cosine = (Thigh * Thigh + distance * distance - Shin * Shin) / (2f * Thigh * distance);
+            float angle = Mathf.Acos(Mathf.Clamp(cosine, -1f, 1f));
+            AimBone(hip, hip.position + (direction * Mathf.Cos(angle) + bend * Mathf.Sin(angle)) * Thigh);
+            AimBone(knee, ankle);
+            shoe.SetPositionAndRotation(foot, rotation);
+        }
+
         void UpdateHead(float dt)
         {
             Quaternion target = Quaternion.Euler(slump * 28f, 0f, 0f);
@@ -1388,18 +1788,24 @@ namespace Bluff.Game
 
         void UpdateArms(float dt)
         {
-            Vector3 targetL = chest.TransformPoint(new Vector3(-0.11f, -0.07f, 0.28f));
+            Vector3 targetL = seated ? CardWristPosition() : chest.TransformPoint(new Vector3(-0.11f, -0.07f, 0.28f));
             Vector3 targetR = chest.TransformPoint(new Vector3(0.13f, -0.09f, 0.26f));
             Quaternion rotationL = LeftWrist;
             Quaternion rotationR = RightWrist;
             gripRTarget = 0.35f;
             switch (armMode)
             {
+                case ArmMode.HoldCards:
+                    if (seated)
+                    {
+                        targetR = chest.TransformPoint(new Vector3(0.15f, 0.08f, 0.25f));
+                        gripRTarget = heldCardCount >= 6 ? 0.9f : 0.35f;
+                    }
+                    break;
                 case ArmMode.Reach:
                     targetR = Reachable(shoulderR, reachTarget + transform.up * 0.05f, 0.46f);
                     break;
                 case ArmMode.Aim:
-                    targetL = chest.TransformPoint(new Vector3(-0.13f, -0.125f, 0.26f));
                     targetR = AimHandPosition();
                     gripRTarget = 1f;
                     break;
@@ -1423,12 +1829,13 @@ namespace Bluff.Game
                     gripRTarget = 0f;
                     break;
                 case ArmMode.Rest:
-                    targetL = hips.TransformPoint(new Vector3(-0.15f, 0.1f, 0.28f));
-                    targetR = hips.TransformPoint(new Vector3(0.15f, 0.1f, 0.28f));
-                    rotationR = Quaternion.Euler(-65f, 0f, -20f);
+                    targetL = hips.TransformPoint(seated ? new Vector3(-0.15f,0.1f,0.28f) : new Vector3(-.24f,-.04f,.06f));
+                    targetR = hips.TransformPoint(seated ? new Vector3(0.15f,0.1f,0.28f) : new Vector3(.24f,-.04f,.06f));
+                    if (!seated) rotationL = Quaternion.Euler(0f,-12f,-8f);
+                    rotationR = seated ? Quaternion.Euler(-65f,0f,-20f) : Quaternion.Euler(0f,12f,8f);
                     break;
                 case ArmMode.Walk:
-                    float swing = Mathf.Sin(phase * walkSpeed * 6.5f);
+                    float swing = Mathf.Sin(standingLocomotion ? stridePhase : phase * walkSpeed * 6.5f);
                     targetL = chest.TransformPoint(new Vector3(-0.24f, -0.27f, 0.1f - swing * 0.12f));
                     targetR = chest.TransformPoint(new Vector3(0.24f, -0.27f, 0.1f + swing * 0.12f));
                     rotationL = Quaternion.Euler(swing * 12f, 0f, 0f) * LeftWrist;
@@ -1439,7 +1846,7 @@ namespace Bluff.Game
             if (action == HandAction.Packet)
             {
                 float approach = Curve(actionTime, 0f, PacketGripTime - 0.08f);
-                targetL = Vector3.Lerp(chest.TransformPoint(startHandL), chest.TransformPoint(new Vector3(-0.11f, -0.07f, 0.28f)), approach);
+                targetL = Vector3.Lerp(chest.TransformPoint(startHandL), CardWristPosition(), approach);
                 rotationL = Quaternion.Slerp(startWristL, LeftWrist, approach);
             }
             else if (action == HandAction.Shot)
@@ -1447,16 +1854,42 @@ namespace Bluff.Game
                 float draw = Curve(actionTime, 0f, DrawTime);
                 float lower = Curve(actionTime, RecoverTime, ShotEndTime);
                 targetL = Vector3.Lerp(chest.TransformPoint(startHandL), targetL, draw);
-                targetL = Vector3.Lerp(targetL, chest.TransformPoint(new Vector3(-0.11f, -0.07f, 0.28f)), lower);
+                targetL = Vector3.Lerp(targetL, CardWristPosition(), lower);
                 rotationL = Quaternion.Slerp(startWristL, LeftWrist, draw);
             }
 
             float k = handsInitialized ? 1f - Mathf.Exp(-12f * dt) : 1f;
             float actionBlend = action == HandAction.None ? k : 1f;
+            targetL = KeepSeatedHandAboveTable(targetL);
+            if (seated && action == HandAction.Packet)
+            {
+                // Lift the source grip too; clamping only the receiving hand makes contact unreachable.
+                Quaternion leftRotation = transform.rotation * rotationL;
+                Quaternion fanRotation = leftRotation * CardHold.localRotation;
+                Quaternion pickupRotation = fanRotation * Quaternion.Inverse(PlayHold.localRotation);
+                Vector3 pickupOffset = leftRotation * CardHold.localPosition
+                    + fanRotation * new Vector3(0.016f, 0f, -0.004f) - pickupRotation * PlayHold.localPosition;
+                targetL.y = Mathf.Max(targetL.y, transform.position.y + TableScene.FeltTop + SeatedHandClearance - pickupOffset.y);
+            }
             handLPos = Vector3.Lerp(handLPos, chest.InverseTransformPoint(targetL), actionBlend);
             wristLRotation = handsInitialized ? Quaternion.Slerp(wristLRotation, rotationL, actionBlend) : rotationL;
-            SolveArm(shoulderL, elbowL, chest.TransformPoint(handLPos), chest.TransformPoint(new Vector3(-0.6f, -0.35f, 0.02f)));
+            SolveArm(shoulderL, elbowL, KeepSeatedHandAboveTable(chest.TransformPoint(handLPos)), ArmPole(-1f));
             handL.rotation = transform.rotation * wristLRotation;
+
+            if (seated && armMode == ArmMode.HoldCards && heldCardCount >= 6 && !Reacting)
+            {
+                var support = CardHold.TransformPoint(new Vector3(Mathf.Min(0.022f, (heldCardCount - 1) * 0.003f), -0.015f, 0f));
+                targetR = support - transform.rotation * RightWrist * CardPalmOffset;
+            }
+
+            if(Reacting)
+            {
+                float weight=Mathf.Clamp01((2.45f-(reactionUntil-Time.time))/.3f)*Mathf.Clamp01((reactionUntil-Time.time)/.35f);
+                var gesture=head.TransformPoint(reaction==0?new Vector3(.10f,.005f,.19f):new Vector3(.16f,.20f,.10f));
+                targetR=Vector3.Lerp(targetR,gesture,weight);
+                rotationR=Quaternion.Slerp(rotationR,Quaternion.Inverse(transform.rotation)*head.rotation*Quaternion.Euler(-15f,20f,155f),weight);
+                gripRTarget=0.1f;
+            }
 
             if (action == HandAction.Packet)
                 PacketPose(ref targetR, ref rotationR);
@@ -1473,8 +1906,21 @@ namespace Bluff.Game
             if (armMode == ArmMode.Aim)
                 targetR += transform.up * (wristKick * 0.012f) - (aimTarget - shoulderR.position).normalized * (wristKick * 0.035f);
 
-            handRPos = Vector3.Lerp(handRPos, chest.InverseTransformPoint(targetR), actionBlend);
-            SolveArm(shoulderR, elbowR, chest.TransformPoint(handRPos), chest.TransformPoint(new Vector3(0.6f, -0.35f, 0.02f)));
+            if (trackedGripGeneration != 0 && !CanTrackGrip(trackedGrip))
+                EndGripTracking(trackedGripGeneration);
+            bool tracking = trackedGripGeneration != 0 && OwnsPose(trackedGripGeneration);
+            if (tracking)
+            {
+                Vector3 wrist = trackedGrip.position - trackedGrip.rotation * GripPalmOffset;
+                targetR = Vector3.Lerp(chest.TransformPoint(trackedStartPosition), wrist, trackedGripWeight);
+                Quaternion wristRotation = Quaternion.Slerp(transform.rotation * trackedStartRotation, trackedGrip.rotation, trackedGripWeight);
+                rotationR = Quaternion.Inverse(transform.rotation) * wristRotation;
+                gripRTarget = trackedFingerWeight;
+            }
+            targetR = KeepSeatedHandAboveTable(targetR);
+            float rightBlend = tracking || seated && armMode == ArmMode.HoldCards && heldCardCount>=6 && !Reacting ? 1f : actionBlend;
+            handRPos = Vector3.Lerp(handRPos, chest.InverseTransformPoint(targetR), rightBlend);
+            SolveArm(shoulderR, elbowR, KeepSeatedHandAboveTable(chest.TransformPoint(handRPos)), ArmPole(1f));
             if (armMode == ArmMode.Aim)
             {
                 Quaternion aim = AimWrist(handR.position);
@@ -1491,7 +1937,7 @@ namespace Bluff.Game
                 wristRRotation = rotationR;
             }
             else
-                wristRRotation = handsInitialized ? Quaternion.Slerp(wristRRotation, rotationR, actionBlend) : rotationR;
+                wristRRotation = handsInitialized ? Quaternion.Slerp(wristRRotation, rotationR, rightBlend) : rotationR;
             handR.rotation = transform.rotation * wristRRotation;
             handsInitialized = true;
         }
@@ -1535,7 +1981,7 @@ namespace Bluff.Game
             Vector3 pickup = pinchPosition - pinchWrist * PlayHold.localPosition;
             Quaternion releaseRotation = transform.rotation * Quaternion.Euler(-10f, 0f, -8f) * RightWrist;
             Vector3 destination = IsFinite(packetDestination) ? packetDestination : chest.TransformPoint(new Vector3(0.13f, -0.02f, 0.8f));
-            releaseWrist = Reachable(shoulderR, destination - releaseRotation * PlayHold.localPosition, 0.45f);
+            releaseWrist = Reachable(shoulderR, KeepSeatedHandAboveTable(destination - releaseRotation * PlayHold.localPosition), 0.45f);
             Quaternion wrist;
             if (actionTime <= PacketGripTime)
             {
@@ -1560,23 +2006,69 @@ namespace Bluff.Game
                 wrist = Quaternion.Slerp(releaseRotation * Quaternion.Euler(-8f * follow, 0f, 0f), transform.rotation * RightWrist, recover);
                 gripRTarget = 0.35f * recover;
             }
-            targetR = Reachable(shoulderR, targetR, 0.49f);
+            targetR = Reachable(shoulderR, KeepSeatedHandAboveTable(targetR), 0.49f);
             rotationR = Quaternion.Inverse(transform.rotation) * wrist;
+        }
+
+        Vector3 KeepSeatedHandAboveTable(Vector3 target)
+        {
+            if (seated)
+                target.y = Mathf.Max(target.y, transform.position.y + TableScene.FeltTop + SeatedHandClearance);
+            return target;
+        }
+
+        Vector3 ArmPole(float side)
+        {
+            return chest.TransformPoint(new Vector3(side * 0.45f, seated ? -0.10f : -0.35f, -0.08f));
         }
 
         void UpdateGrip(float dt)
         {
-            gripR = action == HandAction.None ? Mathf.Lerp(gripR, gripRTarget, 1f - Mathf.Exp(-16f * dt)) : gripRTarget;
+            gripR = action == HandAction.None && trackedGripGeneration == 0 ? Mathf.Lerp(gripR, gripRTarget, 1f - Mathf.Exp(-16f * dt)) : gripRTarget;
+            bool supporting = seated && armMode == ArmMode.HoldCards && heldCardCount >= 6 && action == HandAction.None && !Reacting;
+            bool leftHolding = seated && heldCardCount > 0;
+            cardFingersL.gameObject.SetActive(leftHolding);
+            cardFingersR.gameObject.SetActive(supporting);
+            cardThumbL.gameObject.SetActive(leftHolding);
+            cardThumbR.gameObject.SetActive(supporting);
+            fingersL[4].gameObject.SetActive(!leftHolding);
+            fingersR[4].gameObject.SetActive(!supporting);
             for (int i = 0; i < 4; i++)
             {
-                fingersL[i].localRotation = Quaternion.identity;
+                if (fingersL[i] != null)
+                {
+                    fingersL[i].localRotation = Quaternion.identity;
+                    var position = fingersL[i].localPosition;
+                    position.z = .012f;
+                    fingersL[i].localPosition = position;
+                    fingersL[i].gameObject.SetActive(!leftHolding);
+                }
                 float angle = Mathf.Lerp(32f, 0f, gripR);
                 if (armMode == ArmMode.Aim && i == 0)
                     angle = Mathf.Lerp(18f, -8f, trigger);
-                fingersR[i].localRotation = Quaternion.Euler(angle, 0f, 0f);
+                if (fingersR[i] != null)
+                {
+                    fingersR[i].localRotation = Quaternion.Euler(angle, 0f, 0f);
+                    var position = fingersR[i].localPosition;
+                    position.z = .012f;
+                    fingersR[i].localPosition = position;
+                    fingersR[i].gameObject.SetActive(!supporting);
+                }
             }
-            fingersL[4].localRotation = Quaternion.identity;
-            fingersR[4].localRotation = Quaternion.Euler(0f, -cock * 16f, (1f - gripR) * -12f - cock * 8f);
+            if (fingersL[4] != null)
+            {
+                fingersL[4].localRotation = Quaternion.identity;
+                var position = fingersL[4].localPosition;
+                position.z = seated && heldCardCount > 0 ? -0.016f : 0.004f;
+                fingersL[4].localPosition = position;
+            }
+            if (fingersR[4] != null)
+            {
+                fingersR[4].localRotation = Quaternion.Euler(0f, -cock * 16f, (1f - gripR) * -12f - cock * 8f);
+                var position = fingersR[4].localPosition;
+                position.z = seated && armMode == ArmMode.HoldCards && heldCardCount >= 6 && action == HandAction.None ? -0.016f : 0.004f;
+                fingersR[4].localPosition = position;
+            }
             if (gun != null)
                 RevolverModel.SetMechanism(gun.transform, cock, trigger, cylinderTurn);
         }
@@ -1594,7 +2086,7 @@ namespace Bluff.Game
             eyeL.localScale = eyeScale;
             eyeR.localScale = eyeScale;
 
-            if (maskFlash > 0f)
+            if (maskFlash > 0f && maskMaterial != null)
             {
                 maskFlash = Mathf.MoveTowards(maskFlash, 0f, dt * 0.8f);
                 var c = Color.Lerp(maskColor, maskFlashColor, Mathf.Clamp01(maskFlash * 1.3f));
@@ -1604,7 +2096,7 @@ namespace Bluff.Game
         }
 
         /// <summary>IK dua tulang: arahkan bahu &amp; siku supaya tangan mencapai target, siku condong ke arah pole.</summary>
-        static void SolveArm(Transform shoulder, Transform elbow, Vector3 target, Vector3 pole)
+        void SolveArm(Transform shoulder, Transform elbow, Vector3 target, Vector3 pole)
         {
             Vector3 s = shoulder.position;
             Vector3 toTarget = target - s;
@@ -1618,7 +2110,26 @@ namespace Bluff.Game
             if (bend.sqrMagnitude < 1e-6f)
                 bend = Vector3.ProjectOnPlane(Vector3.right, dir);
             bend.Normalize();
-            Vector3 elbowPos = s + (dir * Mathf.Cos(a) + bend * Mathf.Sin(a)) * UpperArm;
+            Vector3 elbowCenter = s + dir * (Mathf.Cos(a) * UpperArm);
+            float radius = Mathf.Sin(a) * UpperArm;
+            Vector3 elbowPos = elbowCenter + bend * radius;
+            float elbowFloor = transform.position.y + TableScene.FeltTop + 0.065f;
+            if (seated && elbowPos.y < elbowFloor)
+            {
+                // Rotate around the shoulder/wrist axis, preserving both bone lengths.
+                Vector3 upBend = Vector3.ProjectOnPlane(Vector3.up, dir).normalized;
+                float low = 0f;
+                float high = 1f;
+                for (int i = 0; i < 10; i++)
+                {
+                    float amount = (low + high) * 0.5f;
+                    if ((elbowCenter + Vector3.Slerp(bend, upBend, amount) * radius).y < elbowFloor)
+                        low = amount;
+                    else
+                        high = amount;
+                }
+                elbowPos = elbowCenter + Vector3.Slerp(bend, upBend, high) * radius;
+            }
             AimBone(shoulder, elbowPos);
             AimBone(elbow, s + dir * d);
         }

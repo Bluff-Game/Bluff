@@ -90,7 +90,7 @@ namespace Bluff.Game
             while (room.InMatch && Engine.Phase == GamePhase.AwaitingPlay && Engine.CurrentPlayer == player)
             {
                 if (!room.TakeIntent(out var p)) { yield return null; continue; }
-                if (p.Seat != player) { room.Reject(p.Seat, "Bukan giliranmu."); continue; }
+                if (p.Seat != player) { room.Reject(p.Seat, "It is not your turn."); continue; }
                 ActionResult result;
                 switch (p.Action)
                 {
@@ -104,7 +104,7 @@ namespace Bluff.Game
                         result = Engine.TryUsePower(p.Seat, new PowerRequest { Power = p.Power, CardIds = p.Cards, TargetPlayer = p.Target });
                         break;
                     default:
-                        room.Reject(p.Seat, "Aksi ini tidak tersedia di giliranmu.");
+                        room.Reject(p.Seat, "That action is unavailable on your turn.");
                         continue;
                 }
                 if (!result.Ok) { room.Reject(p.Seat, result.Error); continue; }
@@ -171,7 +171,7 @@ namespace Bluff.Game
                 bool changed = false;
                 while (room.TakeIntent(out var p))
                 {
-                    if (passed[p.Seat]) { room.Reject(p.Seat, "Kamu sudah melewatkan taruhan ini."); continue; }
+                    if (passed[p.Seat]) { room.Reject(p.Seat, "You already let this play pass."); continue; }
                     if (p.Action == RoomAction.LetPass && HumanEligible(p.Seat))
                     {
                         passed[p.Seat] = true;
@@ -197,7 +197,7 @@ namespace Bluff.Game
                         changed = true;
                         break;
                     }
-                    else room.Reject(p.Seat, "Tunggu giliranmu untuk aksi ini.");
+                    else room.Reject(p.Seat, "Wait for your turn to do this.");
                 }
                 if (changed) continue;
                 bool allPassed = anyHuman;

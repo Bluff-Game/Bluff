@@ -18,9 +18,9 @@ namespace Bluff.Game
         const string KeyLookSensitivity = "bluff.lookSensitivity";
 
         public static readonly float[] ShootWindowOptions = { 2f, 3f, 4f, 5f, 6f };
-        public static readonly string[] SpeedNames = { "Santai", "Normal", "Cepat" };
+        public static readonly string[] SpeedNames = { "Relaxed", "Normal", "Fast" };
         public static readonly float[] SpeedValues = { 0.75f, 1f, 1.5f };
-        public static readonly string[] DifficultyNames = { "Mudah", "Normal", "Sulit" };
+        public static readonly string[] DifficultyNames = { "Easy", "Normal", "Hard" };
         public static readonly float[] VolumeOptions = { 0f, 0.25f, 0.5f, 0.75f, 1f };
 
         public static string PlayerName
@@ -28,10 +28,10 @@ namespace Bluff.Game
             get
             {
                 // '<' dan '>' dibuang supaya nama tidak merusak rich text.
-                string name = PlayerPrefs.GetString(KeyName, "Kamu").Replace("<", "").Replace(">", "").Trim();
-                return string.IsNullOrEmpty(name) ? "Kamu" : name;
+                string name = RoomProtocol.CleanName(PlayerPrefs.GetString(KeyName, "You"));
+                return string.IsNullOrEmpty(name) ? "You" : name;
             }
-            set => Save(() => PlayerPrefs.SetString(KeyName, value));
+            set => Save(() => PlayerPrefs.SetString(KeyName, RoomProtocol.CleanName(value)));
         }
 
         public static BotDifficulty Difficulty

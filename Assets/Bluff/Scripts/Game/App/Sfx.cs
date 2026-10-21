@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using Bluff.Core;
 
 namespace Bluff.Game
 {
@@ -29,6 +30,54 @@ namespace Bluff.Game
         static Sfx instance;
         AudioSource source;
         readonly Dictionary<SfxType, AudioClip> clips = new Dictionary<SfxType, AudioClip>();
+        readonly Dictionary<int, AudioClip> powerClips = new Dictionary<int, AudioClip>();
+
+        public static void Power(GameObject owner, PowerType power, int variant, bool preview)
+        {
+            if(GameSettings.Volume<=0f || owner==null) return;
+            Ensure();
+            int key=(int)power*3+Mathf.Clamp(variant,0,2);
+            if(!instance.powerClips.TryGetValue(key,out var clip))
+            {
+                float filtered=0f;
+                clip=Make(power+"-"+variant,2.35f,(t,rnd)=>
+                {
+                    float noise=(float)rnd.NextDouble()*2f-1f;
+                    filtered=Mathf.Lerp(filtered,noise,.06f);
+                    float tone=power==PowerType.Cermin?920f:power==PowerType.Tameng?180f:power==PowerType.MataElang?740f:power==PowerType.Hadiah?440f:110f;
+                    float env=Mathf.Clamp01(t/.045f)*Mathf.Exp(-t*1.8f);
+                    float wave;
+                    if(variant==1)
+                    {
+                        // Struck brass: staggered inharmonic resonances and a short metallic attack.
+                        float beat=t% .28f;
+                        wave=(Mathf.Sin(6.283f*tone*t)+.35f*Mathf.Sin(6.283f*tone*2.76f*t))*env*.17f;
+                        wave+=noise*Mathf.Exp(-beat*65f)*Mathf.Exp(-t*2f)*.09f;
+                    }
+                    else if(variant==2)
+                    {
+                        // Flowing jade: rising water-like glissandi, soft wind, and delayed droplets.
+                        wave=Mathf.Sin(6.283f*(tone*.65f*t+90f*t*t)+Mathf.Sin(t*9f)*2f)*env*.14f;
+                        wave+=filtered*Mathf.Sin(Mathf.Clamp01(t/2.35f)*Mathf.PI)*.25f;
+                        for(int drop=0;drop<4;drop++) {float d=t-.2f-drop*.26f;if(d>0f) wave+=Mathf.Sin(6.283f*(1300f*d-250f*d*d))*Mathf.Exp(-d*14f)*.07f;}
+                    }
+                    else wave=(Mathf.Sin(6.283f*tone*t)*.18f+filtered*.18f)*env;
+                    if(power==PowerType.Bakar) wave+=noise*noise*noise*env*(.08f+.08f*Mathf.Sin(t*43f));
+                    if(power==PowerType.Badai) wave+=filtered*env*(.6f+.35f*Mathf.Sin(t*17f));
+                    if(power==PowerType.Cermin)
+                    {
+                        float hit=t-1.05f;
+                        if(hit>0f) wave+=(noise*.14f+Mathf.Sin(6.283f*(variant==1?1700f:variant==2?2400f:3100f)*hit)*.12f)*Mathf.Exp(-hit*9f);
+                    }
+                    return Mathf.Clamp(wave,-.75f,.75f);
+                });
+                instance.powerClips[key]=clip;
+            }
+            var audio=owner.AddComponent<AudioSource>();audio.playOnAwake=false;
+            audio.spatialBlend=preview?0f:.65f;audio.minDistance=1f;audio.maxDistance=7f;
+            audio.pitch=preview?1f:Mathf.Clamp(GameSettings.Speed,.1f,3f);
+            audio.volume=GameSettings.Volume*.8f;audio.clip=clip;audio.Play();
+        }
 
         public static void Play(SfxType type, float volume = 1f)
         {

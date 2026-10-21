@@ -36,6 +36,18 @@ namespace Bluff.Game
         bool focused;
         bool applicationPaused;
         bool skipMouseDelta;
+        float emoteTime;
+        Vector3 emotePosition, emoteLook;
+        public bool ShowingEmote => emoteTime > 0f;
+
+        public void ShowEmote(Vector3 position, Vector3 look)
+        {
+            if(actionFocus) return;
+            focusTarget=focusWeight=0f;
+            EndLook(); emotePosition=position;emoteLook=look;emoteTime=2.8f;
+        }
+
+        public void EndEmote() {emoteTime=0f;}
         CursorLockMode previousCursorLock;
         bool previousCursorVisible;
 
@@ -52,6 +64,7 @@ namespace Bluff.Game
             if (rig == null)
                 rig = camera.gameObject.AddComponent<CameraRig>();
             rig.EndLook();
+            rig.EndEmote();
             rig.lookAngles = Vector2.zero;
             rig.lookAnglesTarget = Vector2.zero;
             rig.lookOffset = Vector3.zero;
@@ -84,7 +97,10 @@ namespace Bluff.Game
         {
             actionFocus = active;
             if (active)
+            {
+                EndEmote();
                 EndLook();
+            }
         }
 
         public void ResetLook()
@@ -136,7 +152,7 @@ namespace Bluff.Game
                 releaseRequired = false;
             }
             if (!focused || !Application.isFocused || applicationPaused || Time.timeScale <= 0f ||
-                inputBlocked || GameTutorial.IsShowing || HasActionFocus || InputCompat.ModalIsShowing())
+                inputBlocked || GameTutorial.IsShowing || HasActionFocus || ShowingEmote || InputCompat.ModalIsShowing())
             {
                 EndLook();
                 return;
@@ -223,7 +239,7 @@ namespace Bluff.Game
             }
             UpdateLookInput();
             float dt = Time.deltaTime;
-            if (dt <= 0f || Time.timeScale <= 0f || !focused || !Application.isFocused || applicationPaused)
+            if (dt <= 0f || Time.timeScale <= 0f || applicationPaused)
                 return;
             time += dt;
             focusWeight = Mathf.Lerp(focusWeight, focusTarget, 1f - Mathf.Exp(-4f * dt));
@@ -258,6 +274,14 @@ namespace Bluff.Game
             cam.transform.rotation = Quaternion.AngleAxis(lookAngles.x, Vector3.up) *
                 Quaternion.LookRotation(look - position) * Quaternion.Euler(lookAngles.y, 0f, 0f);
             cam.fieldOfView = Mathf.Lerp(baseFov, focusFov > 0f ? focusFov : baseFov, focusWeight);
+            if(ShowingEmote)
+            {
+                emoteTime=Mathf.Max(0f,emoteTime-dt);
+                float blend=Mathf.SmoothStep(0f,1f,Mathf.Min((2.8f-emoteTime)/.32f,emoteTime/.35f));
+                cam.transform.position=Vector3.Lerp(cam.transform.position,emotePosition,blend);
+                cam.transform.rotation=Quaternion.Slerp(cam.transform.rotation,Quaternion.LookRotation(emoteLook-emotePosition),blend);
+                cam.fieldOfView=Mathf.Lerp(cam.fieldOfView,48f,blend);
+            }
         }
     }
 }

@@ -2,132 +2,129 @@
   <img src="media/bluf-logo.svg" alt="BLUF" width="400">
 </p>
 
-<h1 align="center">BLUF: Topeng & Elemen</h1>
+# BLUF: Masks & Elements
 
-<p align="center">Game kartu tipu-tipuan 3D untuk empat pemain, dibuat dengan Unity.</p>
+A first-person, four-player bluffing card game made with Unity. Play cards face down, claim an element, and decide whether to trust the next player or spend a bullet on a challenge.
 
-Duduk di meja bersama pemain bertopeng, taruh kartu tertutup, lalu klaim elemennya. Percayai lawan atau gunakan peluru untuk menantang kebohongannya. Tujuannya sederhana: habiskan kartu di tangan dan lolos dari tuduhan terakhir.
+## Open the project
 
-## Fitur
+1. Install **Unity 6.3 LTS, 6000.3.25f1** through Unity Hub.
+2. Add this folder with **Add project from disk** and let Unity import assets and restore packages.
+3. Open `Assets/Bluff/Scenes/MainMenu.unity` and press **Play**. The primary layout is 16:9.
+4. If scene registrations are missing, use **Bluff > Setup Scenes + Build Settings**.
 
-- Permainan orang pertama dengan ruangan, karakter bertopeng, dan kartu 3D.
-- Mode offline melawan tiga komputer, dengan tingkat kesulitan Mudah, Normal, dan Sulit.
-- Enam elemen, kartu Topeng, serta enam jenis Kartu Kuasa.
-- Tutorial awal interaktif dan tombol **Panduan** untuk belajar ulang.
-- Pilihan kartu, klaim, dan tindakan yang menyesuaikan giliran pemain.
-- Avatar karakter, gerakan tangan, dan animasi tembakan.
-- Kontrol kamera untuk melihat sekeliling meja.
-- Implementasi room internet dengan kode undangan, kesiapan pemain, dan bot untuk kursi kosong.
+The project includes MainMenu, Loading, and Game scenes. Local generated folders such as Library, Temp, Logs, obj, and UserSettings are excluded from Git.
 
-> Proyek masih dalam pengembangan. Room internet memerlukan konfigurasi Unity Gaming Services; koneksi Relay lintas jaringan belum diverifikasi. WebGL belum menjadi target rilis yang terverifikasi.
+## How to play
 
-## Cara bermain
+Default rules for four players:
 
-Aturan bawaan untuk empat pemain:
+1. Each player receives **13 cards**, **2 bullets**, and **1 power card** when powers are enabled.
+2. The round leader plays **1-3 cards** and claims an element. The claim may be truthful or a bluff.
+3. Following players use the round's element or pass. The round leader cannot pass.
+4. After a play, another player can choose **BLUFF!** to challenge, or let it pass.
+5. A caught bluffer takes the pile and the challenger recovers their bullet. A mistaken challenger loses a bullet and takes the challenged cards.
+6. When all other players pass consecutively, the pile burns and the last player to play leads the next round.
+7. Empty your hand and survive the final challenge to win.
 
-1. Setiap pemain mendapat **13 kartu**, **2 peluru**, dan **1 Kartu Kuasa** ketika kuasa diaktifkan.
-2. Pemimpin ronde memilih **1–3 kartu** dan mengklaim salah satu elemen. Kartu yang ditaruh boleh sesuai klaim atau berupa kebohongan.
-3. Pemain berikutnya mengikuti elemen ronde atau memilih **Lewati**. Pemimpin ronde tidak boleh melewati giliran.
-4. Setelah kartu ditaruh, pemain lain dapat memilih **BLUFF!** untuk menantang atau **Loloskan** untuk membiarkannya.
-5. Jika taruhan bohong, penaruh mengambil tumpukan dan peluru penantang kembali. Jika taruhan jujur, penantang kehilangan peluru dan mengambil kartu yang dituduh.
-6. Jika semua pemain lain berturut-turut melewati giliran, tumpukan hangus dan pemain terakhir yang menaruh kartu memimpin ronde baru.
-7. Pemain menang ketika kartu terakhirnya lolos atau terbukti jujur saat ditantang.
+**Mask** cards match any element. Each **power is usable once per match**, subject to its conditions. Shield protects a play from challenges; its shop preview includes a sample impact without changing that rule. The interactive guide follows the active rules, including configurable bullet refunds and penalties.
 
-**Topeng** cocok dengan elemen apa pun. **Kartu Kuasa** hanya dapat digunakan sekali, sesuai syarat masing-masing. Pengaturan dapat mengubah pengembalian peluru, hukuman salah tembak, dan penggunaan kuasa; tutorial mengikuti aturan yang aktif.
+## Controls
 
-## Membuka proyek
-
-### Kebutuhan
-
-- Unity Hub.
-- **Unity 6.3 LTS — 6000.3.25f1**.
-- Koneksi internet untuk mengunduh paket pada pembukaan pertama.
-
-### Langkah
-
-1. Tambahkan folder repositori ini melalui **Unity Hub → Add project from disk**.
-2. Tunggu Unity menyelesaikan import aset dan pemulihan paket.
-3. Buka `Assets/Bluff/Scenes/MainMenu.unity`.
-4. Tekan **Play**. Gunakan rasio **16:9** sebagai tampilan utama.
-5. Jika scene atau Build Settings belum tersedia, jalankan **Bluff → Setup Scenes + Build Settings**.
-
-Scene `MainMenu`, `Loading`, dan `Game` sudah disertakan. Editor helper hanya menyiapkan scene atau registrasi build yang belum tersedia.
-
-## Room internet
-
-Mode internet menggunakan **Netcode for GameObjects**, **Unity Transport**, **Relay**, dan **Anonymous Authentication**. Host menjalankan aturan permainan; setiap pemain menerima informasi kartu yang memang boleh dilihatnya.
-
-### Konfigurasi pengembang
-
-1. Hubungkan proyek ke Unity Cloud melalui **Edit → Project Settings → Services**, menggunakan project dan organization milik Anda.
-2. Aktifkan layanan Authentication dan Relay yang diperlukan. Pastikan pengaturan layanan konsisten untuk seluruh build pemain.
-3. Periksa kuota dan biaya layanan sebelum membagikan build publik.
-4. Jalankan pengujian host dan client pada perangkat serta jaringan berbeda.
-
-Tidak perlu memasukkan password Unity, service-account key, atau token privat ke source code. Jika project belum terhubung, aplikasi menampilkan pesan konfigurasi dan tidak membuat room palsu.
-
-### Alur pemain
-
-- Host memilih **Main online → Buat room**, lalu membagikan kode room.
-- Pemain lain memilih **Gabung**, memasukkan kode, lalu menyatakan **Siap**.
-- Host memulai pertandingan setelah pemain siap. Kursi kosong diisi bot hingga total empat pemain.
-- Menu jeda online tidak menghentikan permainan bersama.
-- Koneksi terputus mengakhiri pertandingan dengan pemberitahuan; host migration dan reconnect di tengah pertandingan belum tersedia.
-
-## Kontrol
-
-| Aksi | Kontrol |
+| Action | Control |
 | --- | --- |
-| Pilih atau batalkan pilihan kartu | Klik kiri kartu |
-| Periksa kartu | Arahkan pointer ke kartu |
-| Taruh kartu | Tombol **Taruh kartu** atau **Enter** |
-| Lewati giliran | Tombol **Lewati** atau **P** |
-| Tantang taruhan | Tombol **BLUFF!**, **B**, atau **Spasi** |
-| Gunakan kuasa | Buka informasi kuasa, lalu **Gunakan** |
-| Lihat sekeliling | Tahan klik kanan dan gerakkan mouse |
-| Kembalikan arah pandang | **R** |
-| Pelajari aturan | **Panduan** |
-| Buka menu jeda | **Esc** |
+| Select a card | Left-click |
+| Inspect a card | Hover |
+| Play selected cards | Play cards / Enter |
+| Pass | Pass / P |
+| Challenge | BLUFF! / B / Space |
+| Use a power | Click its icon when Ready |
+| Look around | Hold right mouse button and move |
+| Reset the view | R |
+| React | Choose Laugh / Salute, then a recipient |
+| Open the guide | Guide icon |
+| Pause | Esc |
 
-## Struktur proyek
+Enter and Space activate the focused UI button. B remains the dedicated challenge shortcut. Powers show Ready, Waiting, Armed, Passive, or Used as appropriate. The Eagle Eye ring measures its actual peek duration; it does not recharge the power. Emotes have a four-second cooldown. Choose a recipient to laugh at or salute. Your camera moves briefly to third person, showing your equipped character performing the gesture, then returns to first person. Important match actions interrupt the camera cut.
 
-```text
-Assets/Bluff/
-├── Editor/                 Penyiapan scene dan build settings
-├── Resources/
-│   ├── BluffShaders/       Shader dunia dan efek
-│   ├── Brand/              Logo PNG dan SVG
-│   └── Fonts/              Font beserta lisensinya
-├── Scenes/                 MainMenu, Loading, dan Game
-└── Scripts/
-    ├── Core/               Aturan permainan dan AI, C# tanpa Unity
-    └── Game/
-        ├── App/            Pengaturan, input, dan perpindahan layar
-        ├── Gameplay/       Controller, presentasi, dan HUD
-        ├── Loading/        Alur loading
-        ├── Menu/           Menu utama dan room
-        ├── Networking/     Relay, protokol, dan otoritas host
-        ├── UI/             Komponen UI, avatar, dan tutorial
-        └── World/          Karakter, kartu, kamera, dan animasi
-Packages/                   Dependensi Unity dan lockfile
-ProjectSettings/            Konfigurasi proyek
-media/                      Aset untuk README
-```
+Large hands use multiple rows without pages. A two-hand grip supports larger fans. Cards stay attached to their hand anchor; table clearance moves the hands rather than separating the cards from the fingers. The pile count follows its table position and hides when it leaves the view or is obscured by the player's cards.
 
-Folder `Library`, `Temp`, `Logs`, `obj`, `UserSettings`, dan file solusi IDE tidak disertakan dalam Git karena dibuat ulang secara lokal.
+## Character, wardrobe, and effects
 
-## Verifikasi dan batasan
+**Wardrobe** is the single Home entry for Profile, Wardrobe, and Effects. The profile shortcut opens the same screen.
 
-- Kompilasi proyek dan pengujian fungsional telah dijalankan dalam salinan Unity terisolasi.
-- Aturan permainan telah diuji melalui tes Core dan simulasi bot di workspace pengembangan. Runner tersebut tidak disertakan dalam repositori Unity ini.
-- Protokol online dan koneksi lokal NGO telah diuji; hal ini **bukan** bukti bahwa konfigurasi Relay internet sudah aktif.
-- Tampilan GPU, seluruh ukuran layar, dan kualitas animasi masih memerlukan pemeriksaan visual. Penyempurnaan keterbacaan kartu dan tata letak masih berlangsung.
+- Rename the character with up to 24 characters.
+- Mix **40 pieces** across jackets, trousers, shoes, headwear, and eyewear, or choose one of nine bundles. Bundles discount unowned pieces by 15%.
+- Item cards show pictures rendered from the actual models. Preview the outfit in 3D, drag to rotate, scroll to zoom, or use **Strike a pose**. The model breathes and reacts to changes. New pieces include a velvet smoking jacket, ivory pleats, satin-stripe trousers, brogues, tassel loafers, and an ivory fedora.
+- Equipped items use a green card and check badge; owned items use the normal panel; locked items are dimmed with a lock badge. The gold outline marks the current preview.
+- Selecting an item only previews it. **Buy** unlocks it; **Equip** applies it.
+- Each of six powers offers Classic, Brass Ritual, and Jade Current effects. Variants change shape, movement, and synthesized sound as well as color. Classic, metallic Brass Ritual, and flowing Jade Current have distinct sound envelopes and textures.
+- Effect previews use the same `TablePowerEffect` renderer as matches, in a scene with seated characters, cards, and a table. **Replay** restarts the demonstration; **Change view** switches between the table view and an overview. Mirror faces the incoming shot, sits beyond the character's arms, and keeps its full expanding outline above the felt.
+- Start with **300 coins**. Completing a match earns **40**, with **40 more** for the winner. Leaving early gives no reward.
 
-## Logo dan tipografi
+Ownership, coins, name, and equipped cosmetics are stored locally in PlayerPrefs. The cosmetics key remains `bluff.cosmetics.v1`; existing bundle ownership migrates to individual pieces. There is no cloud economy or server purchase verification.
 
-- Logo transparan PNG: [`Assets/Bluff/Resources/Brand/BlufWordmark.png`](Assets/Bluff/Resources/Brand/BlufWordmark.png).
-- Logo vektor SVG: [`Assets/Bluff/Resources/Brand/BlufWordmark.svg`](Assets/Bluff/Resources/Brand/BlufWordmark.svg).
-- Tipografi UI: **Barlow**.
-- Tipografi judul: **Cormorant Garamond**.
+Outfits appear on portraits, entrance characters, table characters, and the player's sleeves. Internet rooms use protocol **v4**, including the modular outfit and emotes. All clients must use a compatible version.
 
-Kedua font disertakan dengan lisensi SIL Open Font License di [`Assets/Bluff/Resources/Fonts`](Assets/Bluff/Resources/Fonts). Lisensi font tidak menetapkan lisensi untuk keseluruhan proyek.
+![Wardrobe item previews](media/costume-shop.png)
+
+![Effects at the table](media/power-effects-shop.png)
+
+![Directed emote in third person](media/emote-third-person.png)
+
+## Original icons and typography
+
+**36 original transparent PNG icons** live in `Assets/Bluff/Resources/Icons`. Brass medallions, green centers, and engraved symbols provide a shared visual language across Home, the wardrobe, HUD, pause menu, and guide.
+
+The procedural artwork source is `SpriteFactory.Emblems.cs`. Regenerate it with **Bluff > Art > Generate Original Icons**. Use `UIKit.AddButtonIcon` or `UIKit.CreateLabeledIconButton` and the shared power/element emblems. Status information includes text as well as color.
+
+![Original BLUF icons](media/bluf-icons.png)
+
+UI type uses **Plus Jakarta Sans**; headings use **Cormorant Garamond**. Both fonts and their SIL Open Font Licenses are included in `Assets/Bluff/Resources/Fonts`. Their licenses do not define a license for the entire project.
+
+## Internet rooms
+
+Online play uses Netcode for GameObjects, Unity Transport, Relay, and Anonymous Authentication. The host runs the rules and sends each player only the cards they are entitled to see.
+
+1. Link your Unity Cloud project in **Edit > Project Settings > Services**.
+2. Enable Authentication and Relay, using matching service settings across builds.
+3. Review service quotas before distributing public builds.
+4. Verify host and client builds on different devices and networks.
+
+Choose **Play online**, create a room, and share its code. Other players join and mark themselves ready; empty seats become bots. Online pause does not stop the shared match. Disconnects end the session; host migration and mid-match reconnect are not implemented.
+
+No private service keys belong in the source. Missing service configuration produces an error instead of a simulated room.
+
+## Source map
+
+| Directory | Purpose |
+| --- | --- |
+| `Assets/Bluff/Editor` | Scene setup and art generation |
+| `Assets/Bluff/Resources` | Shaders, original icons, logo, and fonts |
+| `Assets/Bluff/Scenes` | Menu, loading, and gameplay scenes |
+| `Assets/Bluff/Scripts/Core` | Game rules and bot decisions, independent of Unity |
+| `Assets/Bluff/Scripts/Game/App` | Settings, cosmetics, and navigation |
+| `Assets/Bluff/Scripts/Game/Gameplay` | Presentation, controller, and HUD |
+| `Assets/Bluff/Scripts/Game/Networking` | Relay and host authority |
+| `Assets/Bluff/Scripts/Game/UI` | UI, portraits, wardrobe, guide, and scene previews |
+| `Assets/Bluff/Scripts/Game/World` | Characters, cards, camera, and effects |
+
+## Entrance animation
+
+The corridor has continuous wall panels, framed emblems, detailed sconces, and a full foreground floor. Entry follows approach, plant, reach, depress, pull, release, and walk-through phases. The right hand tracks the moving handle; a failed entry retains the Continue to table fallback.
+
+## Verification scope
+
+Targeted checks run in an isolated Unity 6000.3.25f1 project copy, preserving the open development project. The latest pass covers:
+
+- Compilation and runtime captures of the wardrobe, power previews, gameplay, emotes, and the complete entrance sequence.
+- Mirror outlines, line thickness, and fragments at 169 animation samples for all 36 seat/variant combinations. Minimum measured felt clearance is 3.3 cm. Live first-person and bot shots also confirm reflection uses the firing position after the gun recovers.
+- Card/hand mesh intersections at 1, 6, 10, and 13 bot cards, with front and both side views. No intersections were detected in these sampled holding poses; the thumb-to-card gap is under 0.5 mm.
+- Direct power activation, duplicate-click protection, an information-only details panel, Shield arming, and directed emote cooldown. Emote completion and interruption restore the camera and preserve selected cards.
+- All 18 effect audio waveforms are distinct and remain below clipping, with a measured peak of 0.43. In-game playback follows animation speed.
+- Protocol v4 round trips for all 24 directed emote combinations, rejection of invalid emotes and older protocol versions, and outfit encoding for all nine bundles.
+- Legacy bundle ownership migration, buying and equipping the five added bundles, duplicate purchase protection, effect purchases, and persistence after reloading the local save.
+
+Earlier targeted passes also covered 16:9 and 4:3 layouts, player card hover poses, and pile-label visibility.
+
+These checks do not establish that every animation frame is collision-free. Multi-client cosmetic synchronization over internet Relay and WebGL releases still require separate verification. The verification editor can emit a Unity Search database exception during startup; this is separate from game compilation and runtime capture.

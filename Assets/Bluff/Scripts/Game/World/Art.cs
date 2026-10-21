@@ -31,7 +31,7 @@ namespace Bluff.Game
             var shader = Shader.Find(name);
             if (shader == null)
             {
-                Debug.LogWarning("[Bluff] Shader " + name + " tidak ditemukan, memakai " + fallback);
+                Debug.LogWarning("[Bluff] Shader " + name + " not found, using " + fallback);
                 shader = Shader.Find(fallback);
             }
             return shader;

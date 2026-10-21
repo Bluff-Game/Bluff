@@ -25,7 +25,7 @@ namespace Bluff.Core
 
         public override int GetHashCode() => Id;
 
-        public override string ToString() => Element + "#" + Id;
+        public override string ToString() => Elements.Name(Element) + "#" + Id;
 
         public static bool operator ==(Card a, Card b) => a.Id == b.Id;
 

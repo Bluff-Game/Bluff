@@ -14,21 +14,26 @@ namespace Bluff.Game
             public int Users;
         }
 
-        static readonly Dictionary<(int scene, int player), Entry> cache = new Dictionary<(int, int), Entry>();
-        (int scene, int player) key;
+        static readonly Dictionary<(int scene, int player, int costume, int frame), Entry> cache = new Dictionary<(int, int, int, int), Entry>();
+        (int scene, int player, int costume, int frame) key;
         Entry entry;
         RawImage image;
 
-        public static RawImage Create(Transform parent, int playerId)
+        public static RawImage Create(Transform parent, int playerId, int costume = -1, bool bust = false)
+            => CreateFrame(parent,playerId,costume,bust ? -2 : -1);
+
+        public static RawImage Item(Transform parent,int outfit,int slot) => CreateFrame(parent,0,outfit,slot);
+
+        static RawImage CreateFrame(Transform parent,int playerId,int costume,int frame)
         {
             var rect = UIKit.CreateRect("AvatarPortrait", parent);
             var portrait = rect.gameObject.AddComponent<AvatarPortrait>();
             portrait.image = rect.gameObject.AddComponent<RawImage>();
             portrait.image.raycastTarget = false;
-            portrait.key = (parent.gameObject.scene.handle, Mathf.Max(0, playerId));
+            portrait.key = (parent.gameObject.scene.handle, Mathf.Max(0, playerId), costume, frame);
             if (!cache.TryGetValue(portrait.key, out portrait.entry))
             {
-                portrait.entry = new Entry { Texture = Capture(parent.gameObject.scene, portrait.key.player) };
+                portrait.entry = new Entry { Texture = Capture(parent.gameObject.scene, portrait.key.player, costume, frame) };
                 cache.Add(portrait.key, portrait.entry);
             }
             portrait.entry.Users++;
@@ -37,9 +42,10 @@ namespace Bluff.Game
             return portrait.image;
         }
 
-        static Texture Capture(Scene ownerScene, int playerId)
+        static Texture Capture(Scene ownerScene, int playerId, int costume, int frame)
         {
-            var style = HumanoidStyle.ForPlayer(playerId);
+            bool bust = frame == -2;
+            var style = costume >= 0 ? Cosmetics.OutfitStyle(costume) : HumanoidStyle.ForPlayer(playerId);
             if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null || !SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB32) || GraphicsSettings.currentRenderPipeline != null)
                 return DrawFallback(style);
             int layer = FindUnusedLayer();
@@ -68,7 +74,8 @@ namespace Bluff.Game
                 if (ownerScene.IsValid() && ownerScene.isLoaded) SceneManager.MoveGameObjectToScene(preview, ownerScene);
                 preview.hideFlags = HideFlags.DontSave;
                 preview.transform.position = new Vector3(12000f, -12000f, 12000f);
-                var character = Humanoid.Create(preview.transform, "Portrait Character", style, true);
+                var character = Humanoid.Create(preview.transform, "Portrait Character", style, frame == -1);
+                if (frame != -1) character.SetPortraitPose();
                 character.enabled = false;
                 foreach (var child in preview.GetComponentsInChildren<Transform>(true)) child.gameObject.layer = layer;
                 foreach (var collider in preview.GetComponentsInChildren<Collider>(true)) collider.enabled = false;
@@ -84,13 +91,16 @@ namespace Bluff.Game
                     renderer.lightProbeUsage = LightProbeUsage.CustomProvided;
                     renderer.SetPropertyBlock(properties);
                 }
-                var focus = character.Head.position + new Vector3(0f, 0.115f, 0.02f);
+                var focus = character.Head.position + new Vector3(0f, bust ? -0.22f : 0.115f, 0.02f);
+                if (frame >= 0) focus=preview.transform.position+Vector3.up*new[]{1.30f,.58f,.12f,1.92f,1.82f,.98f}[Mathf.Min(frame,5)];
+                if (frame==3 || frame==4) focus=character.Head.position+Vector3.up*(frame==3?.25f:.12f);
                 var cameraObject = new GameObject("Portrait Camera", typeof(Camera));
                 cameraObject.transform.SetParent(preview.transform, false);
                 camera = cameraObject.GetComponent<Camera>();
                 camera.enabled = false;
                 camera.orthographic = true;
-                camera.orthographicSize = 0.35f;
+                camera.orthographicSize = bust ? 0.66f : 0.35f;
+                if(frame>=0) camera.orthographicSize=new[]{.43f,.52f,.20f,.31f,.23f,1.13f}[Mathf.Min(frame,5)];
                 camera.aspect = 1f;
                 camera.nearClipPlane = 0.05f;
                 camera.farClipPlane = 4f;
@@ -105,7 +115,7 @@ namespace Bluff.Game
                 camera.transform.LookAt(focus);
                 AddLight(preview.transform, focus + new Vector3(-0.65f, 0.6f, 0.95f), mask, 2.2f, new Color(1f, 0.93f, 0.82f));
                 AddLight(preview.transform, focus + new Vector3(0.6f, 0.16f, 0.7f), mask, 1.2f, new Color(0.84f, 0.91f, 1f));
-                texture = new RenderTexture(256, 256, 24, RenderTextureFormat.ARGB32)
+                texture = new RenderTexture(512, 512, 24, RenderTextureFormat.ARGB32)
                 {
                     name = "Avatar " + playerId,
                     hideFlags = HideFlags.DontSave,

@@ -8,6 +8,7 @@ namespace Bluff.Game
     /// Ruang kartu 3D: lantai, dinding, karpet, meja bundar, lampu gantung, kursi, dan karakter bertopeng.
     /// Kursi relatif 0 = pemain manusia (selatan, sudut pandang orang pertama), lalu searah jarum jam: barat, utara, timur.
     /// </summary>
+    [DefaultExecutionOrder(50)]
     public sealed class TableScene : MonoBehaviour
     {
         public const float TableTop = 0.765f;
@@ -59,10 +60,11 @@ namespace Bluff.Game
                 int relative = human >= 0 ? (id - human + count) % count : id;
                 relativeSeat[id] = relative;
                 var dir = SeatDirection(relative);
+                BuildChair(dir);
                 if (id != human)
                 {
-                    BuildChair(dir);
-                    var character = Humanoid.Create(transform, "Player " + id, HumanoidStyle.ForPlayer(id), true);
+                    int costume = Cosmetics.OutfitForSeat(id, human);
+                    var character = Humanoid.Create(transform, "Player " + id, costume >= 0 ? Cosmetics.OutfitStyle(costume) : HumanoidStyle.ForPlayer(id), true);
                     character.transform.position = dir * SeatDistance;
                     character.transform.rotation = Quaternion.LookRotation(-dir, Vector3.up);
                     character.LookAt(new Vector3(0f, TableTop, 0f));
@@ -616,6 +618,19 @@ namespace Bluff.Game
 
         public Humanoid Character(int id) => characters.TryGetValue(id, out var c) ? c : null;
 
+        public void RefreshOutfit(int id,int outfit)
+        {
+            if(!characters.TryGetValue(id,out var previous)) return;
+            var replacement=Humanoid.Create(transform,previous.name,Cosmetics.OutfitStyle(outfit),true);
+            replacement.transform.SetPositionAndRotation(previous.transform.position,previous.transform.rotation);
+            replacement.LookAt(PileAnchor.position);
+            foreach(var card in fans[id]) card.transform.SetParent(replacement.CardHold,false);
+            replacement.SetHeldCardCount(fans[id].Count);replacement.HoldCards();
+            characters[id]=replacement;
+            previous.gameObject.SetActive(false);Destroy(previous.gameObject);
+            LayoutFan(fans[id]);
+        }
+
         public IEnumerable<Humanoid> Characters => characters.Values;
 
         /// <summary>Posisi kepala (untuk label nama) atau posisi kursi manusia.</summary>
@@ -651,12 +666,12 @@ namespace Bluff.Game
 
         public Vector3 SeatDirectionOf(int id) => SeatDirection(relativeSeat[id]);
 
-        /// <summary>Atur jumlah kartu yang terlihat di kipas lawan (maks. 12 kartu ditampilkan).</summary>
+        /// <summary>Atur jumlah kartu yang terlihat di kipas lawan.</summary>
         public void SetFanCount(int id, int count)
         {
             if (!fans.TryGetValue(id, out var fan))
                 return;
-            int visible = Mathf.Clamp(count, 0, 12);
+            int visible = Mathf.Clamp(count, 0, 13);
             var hold = characters[id].CardHold;
             while (fan.Count < visible)
             {
@@ -671,12 +686,13 @@ namespace Bluff.Game
                 fan.RemoveAt(fan.Count - 1);
                 Destroy(last.gameObject);
             }
+            characters[id].SetHeldCardCount(visible);
             LayoutFan(fan);
         }
 
-        static void LayoutFan(List<Card3D> fan)
+        internal static void LayoutFan(List<Card3D> fan, bool tableClearance = true)
         {
-            float spread = Mathf.Min(70f, 7f * Mathf.Max(0, fan.Count - 1));
+            float spread = Mathf.Min(64f, 5.5f * Mathf.Max(0, fan.Count - 1));
             for (int i = 0; i < fan.Count; i++)
             {
                 float t = fan.Count == 1 ? 0.5f : i / (float)(fan.Count - 1);
@@ -684,9 +700,12 @@ namespace Bluff.Game
                 var rot = Quaternion.Euler(0f, 0f, angle);
                 var tr = fan[i].transform;
                 tr.localRotation = rot;
-                tr.localPosition = rot * new Vector3(0f, 0.07f, 0f) + new Vector3(0f, -0.04f, i * 0.0025f);
+                tr.localPosition = rot * new Vector3(0f, 0.078f, 0f) + new Vector3(0f, -0.025f, i * 0.0005f);
                 tr.localScale = Vector3.one * 0.85f;
             }
+
+            // Clearance belongs to the hand IK. Moving cards independently breaks the pinch.
+
         }
 
         public List<Card3D> TakeFanCards(int id, int count)
@@ -705,6 +724,7 @@ namespace Bluff.Game
                 taken.Add(card);
             }
             fan.RemoveRange(start, fan.Count - start);
+            characters[id].SetHeldCardCount(fan.Count);
             LayoutFan(fan);
             return taken;
         }
@@ -721,8 +741,11 @@ namespace Bluff.Game
 
         public void FlashLamp(float amount) => lampFlicker = Mathf.Max(lampFlicker, amount);
 
-        void Update()
+        void LateUpdate()
         {
+            // Re-evaluate bot fan clearance while their IK hands move during a turn.
+            foreach (var fan in fans.Values)
+                LayoutFan(fan);
             if (lampLight == null)
                 return;
             lampFlicker = Mathf.MoveTowards(lampFlicker, 0f, Time.deltaTime * 2.5f);

@@ -46,16 +46,21 @@ namespace Bluff.Game
         string onlineError;
         string onlineNotice;
         RectTransform titleGroup;
+        Button firstMenuButton;
+        Text profileName;
+        Text wallet;
+        RectTransform profileAvatar;
         TableScene table;
+        int displayedOutfit;
         Camera cam;
         float orbit = 0.6f;
         readonly List<Card3D> pile = new List<Card3D>();
 
         static readonly string[] DifficultyDescriptions =
         {
-            "Komputer ceroboh: sering bohong tanpa hitung-hitungan dan suka menembak asal.",
-            "Komputer wajar: bohong saat tumpukan kecil dan menembak kalau cukup curiga.",
-            "Komputer licik: menghitung kartu, mengingat siapa yang pernah bohong, dan jarang membuang peluru.",
+            "Casual opponents that bluff freely and challenge on a hunch.",
+            "Balanced opponents that pick their moments to bluff and challenge.",
+            "Clever opponents that count cards, remember bluffs, and conserve bullets.",
         };
 
         protected override void Awake()
@@ -65,6 +70,8 @@ namespace Bluff.Game
             BuildShade();
             BuildTitle();
             BuildButtons();
+            BuildProfileShortcut();
+            firstMenuButton?.Select();
 
             var footer = UIKit.CreateText(Root, "Footer", "v0.2", 20, Theme.Muted, TextAnchor.MiddleLeft);
             footer.rectTransform.Place(UIKit.BottomLeft, new Vector2(ColumnX, 42f), new Vector2(ButtonWidth, 28f));
@@ -132,6 +139,7 @@ namespace Bluff.Game
 
         void Build3D()
         {
+            displayedOutfit=Cosmetics.OutfitCode;
             table = TableScene.Create(transform, 4, -1, new List<string> { "A", "B", "C", "D" });
             cam = table.Camera;
             cam.fieldOfView = 42f;
@@ -151,6 +159,12 @@ namespace Bluff.Game
             while (true)
             {
                 yield return new WaitForSeconds(2.2f + (float)rng.NextDouble() * 2f);
+                if(displayedOutfit!=Cosmetics.OutfitCode)
+                {
+                    displayedOutfit=Cosmetics.OutfitCode;
+                    table.RefreshOutfit(0,displayedOutfit);
+                }
+                if (openModal != null) continue;
                 int a = rng.Next(4);
                 var actor = table.Character(a);
                 if (actor == null)
@@ -181,8 +195,11 @@ namespace Bluff.Game
                     var target = table.Character(b);
                     actor.Aim(target.Head.position);
                     yield return new WaitForSeconds(0.5f);
-                    Fx.MuzzleFlash(actor.Muzzle.position, (target.Head.position - actor.Muzzle.position).normalized);
-                    Sfx.Play(SfxType.Shoot, 0.25f);
+                    if(openModal==null)
+                    {
+                        Fx.MuzzleFlash(actor.Muzzle.position, (target.Head.position - actor.Muzzle.position).normalized);
+                        Sfx.Play(SfxType.Shoot, 0.25f);
+                    }
                     StartCoroutine(target.Flinch());
                     StartCoroutine(actor.Recoil());
                     yield return new WaitForSeconds(0.6f);
@@ -223,35 +240,75 @@ namespace Bluff.Game
             var title = UIKit.CreateLogo(titleGroup, "Logo");
             title.rectTransform.Place(UIKit.Center, new Vector2(0f, 28f), new Vector2(472f, 148f));
 
-            var tagline = UIKit.CreateText(titleGroup, "Tagline", "Tipu. Tebak. Tembak.", 24, Theme.Muted, TextAnchor.MiddleLeft);
+            var tagline = UIKit.CreateText(titleGroup, "Tagline", "Bluff. Read. Shoot.", 24, Theme.Muted, TextAnchor.MiddleLeft);
             tagline.rectTransform.Place(UIKit.Center, new Vector2(0f, -74f), new Vector2(ButtonWidth, 36f));
         }
 
         void BuildButtons()
         {
             var column = UIKit.CreateRect("Buttons", Root);
-            column.Place(UIKit.Left, new Vector2(ColumnX, -128f), new Vector2(ButtonWidth, 416f));
+            column.Place(UIKit.Left, new Vector2(ColumnX, -144f), new Vector2(ButtonWidth, 494f));
 
-            float y = 156f;
-            AddMenuButton(column, "Main vs komputer", y, Theme.Gold, Theme.TextDark, ShowPlaySetup);
+            float y = 192f;
+            AddMenuButton(column, "Play vs bots", y, Theme.Gold, Theme.TextDark, ShowPlaySetup);
             y -= 88f;
-            AddMenuButton(column, "Main online", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, ShowOnlineInfo);
+            AddMenuButton(column, "Play online", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, ShowOnlineInfo);
             y -= 78f;
-            AddMenuButton(column, "Belajar bermain", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, ShowTutorial);
+            AddMenuButton(column, "Wardrobe", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, () => ShowWardrobe(true));
             y -= 78f;
-            AddMenuButton(column, "Pengaturan", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, ShowSettings);
+            AddMenuButton(column, "Learn to play", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, ShowTutorial);
             y -= 78f;
-            AddMenuButton(column, "Keluar", y, Color.clear, Theme.Muted, Quit);
+            AddMenuButton(column, "Settings", y, Theme.Panel.WithAlpha(0.8f), Theme.Text, ShowSettings);
+            var exit = UIKit.CreateLabeledIconButton(Root, "Exit", "Exit", SpriteFactory.Emblem(GameIcon.Exit), Quit);
+            exit.GetComponent<RectTransform>().Place(UIKit.TopRight, new Vector2(-68f, -62f), new Vector2(88f,84f));
         }
 
         Button AddMenuButton(RectTransform parent, string label, float y, Color bg, Color fg, System.Action onClick)
         {
             var button = UIKit.CreateButton(parent, label, label, new Vector2(ButtonWidth, ButtonHeight), bg, fg, onClick, 28, 6f);
+            if (firstMenuButton == null)
+                firstMenuButton = button;
             button.GetComponent<RectTransform>().Place(UIKit.Center, new Vector2(0f, y), new Vector2(ButtonWidth, ButtonHeight));
             var text = button.GetComponentInChildren<Text>();
             text.alignment = TextAnchor.MiddleLeft;
             text.rectTransform.Stretch(24f, 24f, 0f, 0f);
+            var icon = label == "Play vs bots" ? GameIcon.Duel : label == "Play online" ? GameIcon.Online :
+                label == "Wardrobe" ? GameIcon.Costume : label == "Learn to play" ? GameIcon.Guide : GameIcon.Settings;
+            UIKit.AddButtonIcon(button, SpriteFactory.Emblem(icon), Color.white, 48f, 12f);
             return button;
+        }
+
+        void BuildProfileShortcut()
+        {
+            var profile = UIKit.CreateButton(Root, "Profile Shortcut", "", new Vector2(420f,100f), Theme.Panel, Theme.Text, () => ShowWardrobe(false), 24, 8f);
+            profile.GetComponent<RectTransform>().Place(UIKit.TopLeft, new Vector2(340f,-88f), new Vector2(420f,100f));
+            profileAvatar = UIKit.CreatePanel(profile.transform, "Profile Portrait", Theme.PanelLight, 8f).rectTransform;
+            profileAvatar.Place(UIKit.Left,new Vector2(50f,0f),new Vector2(84f,84f));
+            profileAvatar.gameObject.AddComponent<Mask>().showMaskGraphic = true;
+            profileName = UIKit.CreateText(profile.transform,"Profile Name","",26,Theme.Text,TextAnchor.MiddleLeft);
+            profileName.supportRichText = false;
+            profileName.verticalOverflow = VerticalWrapMode.Truncate;
+            profileName.rectTransform.Place(UIKit.TopLeft,new Vector2(254f,-30f),new Vector2(284f,36f));
+            var coin = UIKit.CreateImage(profile.transform,"Coin",SpriteFactory.Emblem(GameIcon.Coin),Color.white);
+            coin.rectTransform.Place(UIKit.BottomLeft,new Vector2(128f,28f),new Vector2(30f,30f));
+            wallet = UIKit.CreateText(profile.transform,"Wallet","",22,Theme.Gold,TextAnchor.MiddleLeft);
+            wallet.rectTransform.Place(UIKit.BottomLeft,new Vector2(254f,28f),new Vector2(216f,32f));
+            RefreshProfile();
+        }
+
+        void RefreshProfile()
+        {
+            profileName.text = GameSettings.PlayerName;
+            wallet.text = Cosmetics.Coins + " coins";
+            foreach (Transform child in profileAvatar) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
+            AvatarPortrait.Create(profileAvatar, 0, Cosmetics.OutfitCode).rectTransform.Stretch();
+        }
+
+        void ShowWardrobe(bool shop)
+        {
+            var modal = OpenModal("Your character", new Vector2(1280f,940f));
+            if (modal == null) return;
+            CosmeticWardrobe.Build(modal.Content,shop,RefreshProfile);
         }
 
         // ------------------------------------------------------------------ dialog
@@ -266,7 +323,7 @@ namespace Bluff.Game
                     return;
                 if (room != null && room.IsConnected)
                 {
-                    onlineNotice = "Pilih Keluar room untuk meninggalkan room sebelum menutup.";
+                    onlineNotice = "Leave the room before closing this menu.";
                     RefreshOnlineRoom();
                     return;
                 }
@@ -274,6 +331,7 @@ namespace Bluff.Game
             openModal.Close();
             openModal = null;
             onlineModal = false;
+            firstMenuButton?.Select();
         }
 
         UIKit.Modal OpenModal(string title, Vector2 size)
@@ -281,41 +339,41 @@ namespace Bluff.Game
             CloseModal();
             if (openModal != null || GameTutorial.IsShowing)
                 return null;
-            openModal = UIKit.CreateModal(Root, title, size, () => openModal = null);
+            openModal = UIKit.CreateModal(Root, title, size, () => { openModal = null; firstMenuButton?.Select(); });
             return openModal;
         }
 
         void ShowPlaySetup()
         {
-            var modal = OpenModal("Main vs Komputer", new Vector2(900f, 660f));
+            var modal = OpenModal("Play vs bots", new Vector2(900f, 660f));
             if (modal == null)
                 return;
             var content = modal.Content;
 
-            var nameLabel = UIKit.CreateText(content, "NameLabel", "Nama kamu", 30, Theme.Muted, TextAnchor.MiddleLeft);
+            var nameLabel = UIKit.CreateText(content, "NameLabel", "Your name", 30, Theme.Muted, TextAnchor.MiddleLeft);
             nameLabel.rectTransform.Place(UIKit.Top, new Vector2(0f, -20f), new Vector2(800f, 40f));
-            var input = UIKit.CreateInput(content, GameSettings.PlayerName, "Masukkan nama…", 14, new Vector2(800f, 72f));
+            var input = UIKit.CreateInput(content, GameSettings.PlayerName, "Enter your name...", 24, new Vector2(800f, 72f));
             input.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(0f, -86f), new Vector2(800f, 72f));
 
             var description = UIKit.CreateText(content, "Description", DifficultyDescriptions[(int)GameSettings.Difficulty], 26, Theme.Text.WithAlpha(0.8f), TextAnchor.UpperCenter);
             description.rectTransform.Place(UIKit.Top, new Vector2(0f, -268f), new Vector2(780f, 90f));
-            var difficultyRow = UIKit.CreateSelector(content, "Lawan komputer", GameSettings.DifficultyNames, (int)GameSettings.Difficulty, i =>
+            var difficultyRow = UIKit.CreateSelector(content, "Bot difficulty", GameSettings.DifficultyNames, (int)GameSettings.Difficulty, i =>
             {
                 GameSettings.Difficulty = (BotDifficulty)i;
                 description.text = DifficultyDescriptions[i];
             }, 800f);
             difficultyRow.Place(UIKit.Top, new Vector2(0f, -180f), new Vector2(800f, 76f));
 
-            var powerRow = UIKit.CreateSelector(content, "Kartu Kuasa", new[] { "Nonaktif", "Aktif" }, GameSettings.EnablePowers ? 1 : 0,
+            var powerRow = UIKit.CreateSelector(content, "Power cards", new[] { "Off", "On" }, GameSettings.EnablePowers ? 1 : 0,
                 i => GameSettings.EnablePowers = i == 1, 800f);
             powerRow.Place(UIKit.Top, new Vector2(0f, -340f), new Vector2(800f, 76f));
 
-            var info = UIKit.CreateText(content, "Info", "4 pemain  ·  13 kartu  ·  2 peluru  ·  1 Kartu Kuasa per pemain", 24, Theme.Muted);
+            var info = UIKit.CreateText(content, "Info", "4 players  /  13 cards  /  2 bullets  /  1 power each", 24, Theme.Muted);
             info.rectTransform.Place(UIKit.Bottom, new Vector2(0f, 122f), new Vector2(800f, 36f));
 
-            var start = UIKit.CreateButton(content, "Start", "Mulai", new Vector2(420f, 86f), Theme.Gold, Theme.TextDark, () =>
+            var start = UIKit.CreateButton(content, "Start", "Start", new Vector2(420f, 86f), Theme.Gold, Theme.TextDark, () =>
             {
-                GameSettings.PlayerName = string.IsNullOrWhiteSpace(input.text) ? "Kamu" : input.text.Trim();
+                GameSettings.PlayerName = string.IsNullOrWhiteSpace(input.text) ? "You" : input.text.Trim();
                 SceneFlow.GoToGame();
             }, 38, 24f);
             start.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(0f, 46f), new Vector2(420f, 86f));
@@ -351,7 +409,7 @@ namespace Bluff.Game
             onlineNotice = null;
             requestedReady = null;
             startPending = false;
-            openModal = UIKit.CreateModal(Root, "Main online", new Vector2(980f, 920f), null);
+            openModal = UIKit.CreateModal(Root, "Play online", new Vector2(980f, 920f), null);
             onlineModal = true;
             var content = openModal.Content;
             const float width = 884f;
@@ -360,19 +418,19 @@ namespace Bluff.Game
 
             onlineSetup = UIKit.CreateRect("RoomSetup", content);
             onlineSetup.Stretch();
-            var nameLabel = UIKit.CreateText(onlineSetup, "NameLabel", "Nama kamu", 28, Theme.Muted, TextAnchor.MiddleLeft);
+            var nameLabel = UIKit.CreateText(onlineSetup, "NameLabel", "Your name", 28, Theme.Muted, TextAnchor.MiddleLeft);
             nameLabel.rectTransform.Place(UIKit.Top, new Vector2(0f, -26f), new Vector2(width, 40f));
-            onlineName = UIKit.CreateInput(onlineSetup, GameSettings.PlayerName, "Masukkan nama…", 14, new Vector2(width, 72f));
+            onlineName = UIKit.CreateInput(onlineSetup, GameSettings.PlayerName, "Enter your name...", 14, new Vector2(width, 72f));
             onlineName.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(0f, -88f), new Vector2(width, 72f));
-            var codeLabel = UIKit.CreateText(onlineSetup, "CodeLabel", "Kode room untuk bergabung", 28, Theme.Muted, TextAnchor.MiddleLeft);
+            var codeLabel = UIKit.CreateText(onlineSetup, "CodeLabel", "Room code", 28, Theme.Muted, TextAnchor.MiddleLeft);
             codeLabel.rectTransform.Place(UIKit.Top, new Vector2(0f, -178f), new Vector2(width, 40f));
-            onlineCode = UIKit.CreateInput(onlineSetup, "", "Masukkan kode dari teman…", 64, new Vector2(width, 72f));
+            onlineCode = UIKit.CreateInput(onlineSetup, "", "Enter a friend's code...", 64, new Vector2(width, 72f));
             onlineCode.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(0f, -240f), new Vector2(width, 72f));
             onlineName.onValueChanged.AddListener(_ => RefreshOnlineRoom());
             onlineCode.onValueChanged.AddListener(_ => RefreshOnlineRoom());
-            createRoom = UIKit.CreateButton(onlineSetup, "CreateRoom", "Buat room", new Vector2(422f, 76f), Theme.Gold, Theme.TextDark, () => ConnectRoom(true), 30);
+            createRoom = UIKit.CreateButton(onlineSetup, "CreateRoom", "Create room", new Vector2(422f, 76f), Theme.Gold, Theme.TextDark, () => ConnectRoom(true), 30);
             createRoom.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(-231f, -352f), new Vector2(422f, 76f));
-            joinRoom = UIKit.CreateButton(onlineSetup, "JoinRoom", "Gabung", new Vector2(422f, 76f), Theme.PanelLight, Theme.Text, () => ConnectRoom(false), 30);
+            joinRoom = UIKit.CreateButton(onlineSetup, "JoinRoom", "Join", new Vector2(422f, 76f), Theme.PanelLight, Theme.Text, () => ConnectRoom(false), 30);
             joinRoom.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(231f, -352f), new Vector2(422f, 76f));
 
             onlineLobby = UIKit.CreateRect("RoomLobby", content);
@@ -383,12 +441,12 @@ namespace Bluff.Game
             roomCode.resizeTextMinSize = 20;
             roomCode.resizeTextMaxSize = 34;
             roomCode.rectTransform.Place(UIKit.Top, new Vector2(-116f, -38f), new Vector2(652f, 64f));
-            copyCode = UIKit.CreateButton(onlineLobby, "CopyCode", "Salin kode", new Vector2(204f, 64f), Theme.PanelLight, Theme.Text, () =>
+            copyCode = UIKit.CreateButton(onlineLobby, "CopyCode", "Copy code", new Vector2(204f, 64f), Theme.PanelLight, Theme.Text, () =>
             {
                 if (room == null || !room.IsConnected || string.IsNullOrEmpty(room.RoomCode))
                     return;
                 GUIUtility.systemCopyBuffer = room.RoomCode;
-                onlineNotice = "Kode room disalin.";
+                onlineNotice = "Room code copied.";
                 RefreshOnlineRoom();
             }, 26);
             copyCode.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(340f, -38f), new Vector2(204f, 64f));
@@ -405,18 +463,18 @@ namespace Bluff.Game
                 seatStates[i] = UIKit.CreateText(row.transform, "State", "", 23, Theme.Muted, TextAnchor.MiddleRight);
                 seatStates[i].rectTransform.Stretch(510f, 20f, 10f, 10f);
             }
-            var botNote = UIKit.CreateText(onlineLobby, "BotFill", "Kursi kosong diisi komputer saat permainan dimulai.", 23, Theme.Muted);
+            var botNote = UIKit.CreateText(onlineLobby, "BotFill", "Empty seats are filled by bots when the match starts.", 23, Theme.Muted);
             botNote.rectTransform.Place(UIKit.Top, new Vector2(0f, -476f), new Vector2(width, 46f));
 
             var statusArea = UIKit.CreateRect("RoomStatus", content);
             statusArea.Place(UIKit.Bottom, new Vector2(0f, 178f), new Vector2(width, 128f));
             onlineStatus = UIKit.CreateScrollText(statusArea, "", 23);
             onlineStatus.supportRichText = false;
-            leaveRoom = UIKit.CreateButton(content, "LeaveRoom", "Tutup", new Vector2(422f, 76f), Theme.PanelLight, Theme.Text, LeaveRoom, 28);
+            leaveRoom = UIKit.CreateButton(content, "LeaveRoom", "Close", new Vector2(422f, 76f), Theme.PanelLight, Theme.Text, LeaveRoom, 28);
             leaveRoom.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(-231f, 40f), new Vector2(422f, 76f));
-            startMatch = UIKit.CreateButton(content, "StartMatch", "Mulai", new Vector2(422f, 76f), Theme.Gold, Theme.TextDark, StartOnlineMatch, 32);
+            startMatch = UIKit.CreateButton(content, "StartMatch", "Start", new Vector2(422f, 76f), Theme.Gold, Theme.TextDark, StartOnlineMatch, 32);
             startMatch.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(231f, 40f), new Vector2(422f, 76f));
-            ready = UIKit.CreateButton(content, "Ready", "Siap", new Vector2(422f, 76f), Theme.Gold, Theme.TextDark, ToggleReady, 32);
+            ready = UIKit.CreateButton(content, "Ready", "Ready", new Vector2(422f, 76f), Theme.Gold, Theme.TextDark, ToggleReady, 32);
             ready.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(231f, 40f), new Vector2(422f, 76f));
             readyLabel = ready.GetComponentInChildren<Text>();
             RefreshOnlineRoom();
@@ -474,46 +532,46 @@ namespace Bluff.Game
             bool busy = requestPending || serviceBusy || startPending || inMatch;
             onlineSetup.gameObject.SetActive(!connected && !inMatch);
             onlineLobby.gameObject.SetActive(connected || inMatch);
-            openModal.Title.text = connected || inMatch ? "Room online" : "Main online";
+            openModal.Title.text = connected || inMatch ? "Online room" : "Play online";
             onlineName.interactable = !busy && !connected;
             onlineCode.interactable = !busy && !connected;
             createRoom.interactable = !busy && !connected;
             joinRoom.interactable = !busy && !connected && !string.IsNullOrWhiteSpace(onlineCode.text);
             onlineClose.interactable = !busy && !connected;
             leaveRoom.interactable = !busy;
-            leaveRoom.GetComponentInChildren<Text>().text = connected ? "Keluar room" : "Tutup";
+            leaveRoom.GetComponentInChildren<Text>().text = connected ? "Leave room" : "Close";
             copyCode.interactable = connected && !busy && !string.IsNullOrEmpty(room.RoomCode);
-            roomCode.text = "Kode room: " + (room != null && !string.IsNullOrEmpty(room.RoomCode) ? room.RoomCode : "Menunggu…");
+            roomCode.text = "Room code: " + (room != null && !string.IsNullOrEmpty(room.RoomCode) ? room.RoomCode : "Waiting...");
             startMatch.gameObject.SetActive(host);
             startMatch.interactable = CanStartMatch();
             ready.gameObject.SetActive(connected && !host);
             ready.interactable = localConnected && !busy && !requestedReady.HasValue;
-            readyLabel.text = requestedReady.HasValue ? "Menyimpan…" : localReady ? "Batal siap" : "Siap";
+            readyLabel.text = requestedReady.HasValue ? "Saving..." : localReady ? "Not ready" : "Ready";
 
             for (int i = 0; i < seatNames.Length; i++)
             {
                 bool found = TryGetSeat(i, out var seat);
-                string name = "Kosong";
-                string state = "Akan diisi komputer";
+                string name = "Empty";
+                string state = "Bot will join";
                 Color color = Theme.Muted;
                 if (found && seat.IsBot)
                 {
-                    name = string.IsNullOrWhiteSpace(seat.Name) ? "Komputer" : seat.Name;
-                    state = "Komputer · otomatis";
+                    name = string.IsNullOrWhiteSpace(seat.Name) ? "Bot" : seat.Name;
+                    state = "Bot - ready";
                     color = Theme.Green;
                 }
                 else if (found && seat.Connected)
                 {
-                    name = string.IsNullOrWhiteSpace(seat.Name) ? "Pemain" : seat.Name;
+                    name = string.IsNullOrWhiteSpace(seat.Name) ? "Player" : seat.Name;
                     if (i == room.LocalSeat)
-                        name += host ? " (kamu, host)" : " (kamu)";
-                    state = seat.Ready ? "Terhubung · siap" : "Terhubung · belum siap";
+                        name += host ? " (you, host)" : " (you)";
+                    state = seat.Ready ? "Connected - ready" : "Connected - not ready";
                     color = seat.Ready ? Theme.Green : Theme.Muted;
                 }
                 else if (found && !string.IsNullOrWhiteSpace(seat.Name))
                 {
                     name = seat.Name;
-                    state = "Tidak terhubung · belum siap";
+                    state = "Disconnected - not ready";
                 }
                 seatNames[i].text = (i + 1) + ". " + name;
                 seatStates[i].text = state;
@@ -522,15 +580,15 @@ namespace Bluff.Game
 
             string status = room != null ? room.Status : null;
             if (inMatch)
-                status = "Memasuki permainan…";
+                status = "Entering match...";
             else if (requestPending)
                 status = requestStatus + (string.IsNullOrWhiteSpace(status) ? "" : "\n" + status);
             else if (startPending)
-                status = "Menunggu permainan dimulai…";
+                status = "Waiting for match...";
             else if (serviceBusy && string.IsNullOrWhiteSpace(status))
-                status = "Menghubungkan…";
+                status = "Connecting...";
             if (string.IsNullOrWhiteSpace(status))
-                status = connected ? host ? "Tunggu semua teman siap, lalu pilih Mulai." : "Pilih Siap setelah kamu siap bermain." : "Buat room atau masukkan kode dari teman untuk bergabung.";
+                status = connected ? host ? "Start once everyone is ready." : "Select Ready when you are ready to play." : "Create a room or join with a friend's code.";
             if (!string.IsNullOrWhiteSpace(error) && !status.Contains(error))
                 status += "\n" + error;
             if (!string.IsNullOrWhiteSpace(onlineNotice))
@@ -546,9 +604,9 @@ namespace Bluff.Game
             string code = onlineCode.text.Trim();
             if (!create && code.Length == 0)
                 return;
-            string name = string.IsNullOrWhiteSpace(onlineName.text) ? "Kamu" : onlineName.text.Trim();
+            string name = string.IsNullOrWhiteSpace(onlineName.text) ? "You" : onlineName.text.Trim();
             requestPending = true;
-            requestStatus = create ? "Membuat room…" : "Bergabung ke room…";
+            requestStatus = create ? "Creating room..." : "Joining room...";
             onlineError = null;
             onlineNotice = null;
             RefreshOnlineRoom();
@@ -559,7 +617,7 @@ namespace Bluff.Game
                 service = InternetRoom.Ensure();
                 AttachRoom(service);
                 if (service == null)
-                    throw new System.InvalidOperationException("Layanan room tidak tersedia.");
+                    throw new System.InvalidOperationException("Room service is unavailable.");
                 if (create)
                     await service.CreateRoomAsync(GameSettings.PlayerName);
                 else
@@ -591,7 +649,7 @@ namespace Bluff.Game
             }
             var service = room;
             requestPending = true;
-            requestStatus = "Meninggalkan room…";
+            requestStatus = "Leaving room...";
             onlineError = null;
             onlineNotice = null;
             requestedReady = null;
@@ -673,14 +731,12 @@ namespace Bluff.Game
 
         void ShowRules()
         {
-            var modal = OpenModal("Cara Bermain", new Vector2(1240f, 900f));
-            if (modal != null)
-                UIKit.CreateScrollText(modal.Content, RulesText.Build(), 28);
+            ShowTutorial();
         }
 
         void ShowSettings()
         {
-            var modal = OpenModal("Pengaturan", new Vector2(980f, 820f));
+            var modal = OpenModal("Settings", new Vector2(980f, 820f));
             if (modal == null)
                 return;
             var list = UIKit.CreateRect("List", modal.Content);
@@ -697,28 +753,28 @@ namespace Bluff.Game
             const float width = 860f;
             var windowNames = new string[GameSettings.ShootWindowOptions.Length];
             for (int i = 0; i < windowNames.Length; i++)
-                windowNames[i] = GameSettings.ShootWindowOptions[i].ToString("0") + " detik";
-            UIKit.CreateSelector(list, "Jendela tembak", windowNames, GameSettings.ShootWindowIndex, i => GameSettings.ShootWindowIndex = i, width);
-            UIKit.CreateSelector(list, "Kecepatan permainan", GameSettings.SpeedNames, GameSettings.SpeedIndex, i => GameSettings.SpeedIndex = i, width);
+                windowNames[i] = GameSettings.ShootWindowOptions[i].ToString("0") + " sec";
+            UIKit.CreateSelector(list, "Challenge window", windowNames, GameSettings.ShootWindowIndex, i => GameSettings.ShootWindowIndex = i, width);
+            UIKit.CreateSelector(list, "Game speed", GameSettings.SpeedNames, GameSettings.SpeedIndex, i => GameSettings.SpeedIndex = i, width);
 
             var volumeNames = new string[GameSettings.VolumeOptions.Length];
             for (int i = 0; i < volumeNames.Length; i++)
                 volumeNames[i] = Mathf.RoundToInt(GameSettings.VolumeOptions[i] * 100f) + "%";
-            UIKit.CreateSelector(list, "Efek suara", volumeNames, GameSettings.VolumeIndex, i =>
+            UIKit.CreateSelector(list, "Sound effects", volumeNames, GameSettings.VolumeIndex, i =>
             {
                 GameSettings.VolumeIndex = i;
                 Sfx.Play(SfxType.Card);
             }, width);
 
-            UIKit.CreateSelector(list, "Kartu Kuasa", new[] { "Nonaktif", "Aktif" }, GameSettings.EnablePowers ? 1 : 0,
+            UIKit.CreateSelector(list, "Power cards", new[] { "Off", "On" }, GameSettings.EnablePowers ? 1 : 0,
                 i => GameSettings.EnablePowers = i == 1, width);
-            UIKit.CreateSelector(list, "Tembakan jitu: peluru kembali", new[] { "Tidak", "Ya" }, GameSettings.RefundBulletOnHit ? 1 : 0,
+            UIKit.CreateSelector(list, "Refund correct shots", new[] { "No", "Yes" }, GameSettings.RefundBulletOnHit ? 1 : 0,
                 i => GameSettings.RefundBulletOnHit = i == 1, width);
-            UIKit.CreateSelector(list, "Salah tembak: ambil", new[] { "Kartu tuduhan", "Semua tumpukan" }, GameSettings.ClassicWrongShotPenalty ? 1 : 0,
+            UIKit.CreateSelector(list, "Wrong challenge takes", new[] { "Challenged cards", "Whole pile" }, GameSettings.ClassicWrongShotPenalty ? 1 : 0,
                 i => GameSettings.ClassicWrongShotPenalty = i == 1, width);
 
             var note = UIKit.CreateText(list, "Note",
-                "Aturan bawaan: Kartu Kuasa aktif, peluru kembali saat tembakan jitu, dan salah tembak hanya mengambil kartu yang dituduh.",
+                "Default rules: powers on, correct shots refunded, wrong challenges take the challenged cards.",
                 23, Theme.Muted, TextAnchor.MiddleCenter, FontStyle.Italic);
             note.rectTransform.sizeDelta = new Vector2(width, 80f);
         }

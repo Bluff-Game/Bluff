@@ -10,8 +10,8 @@ namespace Bluff.Game
     [DefaultExecutionOrder(-10000)]
     public sealed class GameTutorial : MonoBehaviour
     {
-        static readonly Vector2 PanelSize = new Vector2(1080f, 800f);
-        static readonly Vector2 CardSize = new Vector2(160f, 224f);
+        static readonly string[] StepNames = { "Select cards", "Claim", "BLUFF!", "Masks & powers" };
+        static readonly string[] TopicNames = { "Objective", "Turns & claims", "BLUFF! & Let pass", "Passing & rounds", "Mask" };
         static GameTutorial current;
         static int closedFrame = -1;
 
@@ -23,32 +23,31 @@ namespace Bluff.Game
         };
         readonly bool[] selected = new bool[3];
         readonly int[] decisions = { -1, -1 };
+        readonly bool[] powerDemoUsed = new bool[7];
         readonly List<Button> controls = new List<Button>();
         readonly List<Image> focusOutlines = new List<Image>();
-        readonly List<Image> selectionOutlines = new List<Image>();
-        readonly List<Text> selectionLabels = new List<Text>();
-        readonly List<Image> claimOutlines = new List<Image>();
 
-        RectTransform panel;
+        RectTransform owner;
+        RectTransform view;
         RectTransform page;
-        Text progress;
-        Text heading;
-        Text introduction;
-        Text feedback;
-        Text selectionSummary;
-        Text nextLabel;
-        Button next;
-        Button back;
-        Button skip;
+        ScrollRect bodyScroll;
+        ScrollRect topicScroll;
         EventSystem eventSystem;
         GameObject previousSelection;
+        Vector2 viewSize;
         bool previousNavigation;
         bool ownsFocus;
         bool closing;
         bool finished;
+        bool referenceMode;
+        bool maskTried;
+        bool selectionLimitReached;
         int step;
+        int unlockedStep;
+        int topic;
         int example;
         int builtFrame;
+        float pageWidth;
         Element? claim;
         GameConfig config;
         Action onClosed;
@@ -56,12 +55,12 @@ namespace Bluff.Game
         public bool IsOpen => !closing && !finished && isActiveAndEnabled;
         public static bool IsShowing => (current != null && current.isActiveAndEnabled) || closedFrame == Time.frameCount;
 
-        public static GameTutorial Show(RectTransform parent, System.Action onClosed)
+        public static GameTutorial Show(RectTransform parent, Action onClosed)
         {
             if (parent == null)
                 throw new ArgumentNullException(nameof(parent));
             if (!parent.gameObject.activeInHierarchy)
-                throw new ArgumentException("Tutorial memerlukan parent yang aktif.", nameof(parent));
+                throw new ArgumentException("Tutorial requires an active parent.", nameof(parent));
             if (current != null && !current.finished)
             {
                 if (onClosed != null)
@@ -74,20 +73,22 @@ namespace Bluff.Game
 
             var parentCanvas = parent.GetComponentInParent<Canvas>();
             if (parentCanvas == null)
-                throw new ArgumentException("Tutorial memerlukan parent di dalam Canvas.", nameof(parent));
+                throw new ArgumentException("Tutorial requires a parent inside a Canvas.", nameof(parent));
             UIKit.EnsureEventSystem();
-            var root = UIKit.CreateRect("Modal Tutorial", parentCanvas.rootCanvas.transform);
-            root.Stretch();
-            var canvas = root.gameObject.AddComponent<Canvas>();
-            canvas.overrideSorting = true;
-            canvas.sortingOrder = short.MaxValue;
-            root.gameObject.AddComponent<GraphicRaycaster>();
-            var group = root.gameObject.AddComponent<CanvasGroup>();
-            group.ignoreParentGroups = true;
+            var canvas = UIKit.CreateCanvas("Modal Tutorial", null, short.MaxValue);
+            canvas.targetDisplay = parentCanvas.rootCanvas.targetDisplay;
+            if (parent.gameObject.scene.IsValid())
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(canvas.gameObject, parent.gameObject.scene);
+            var scaler = canvas.GetComponent<CanvasScaler>();
+            scaler.referenceResolution = new Vector2(1280f, 720f);
+            scaler.matchWidthOrHeight = 1f;
+            var group = canvas.gameObject.AddComponent<CanvasGroup>();
             group.blocksRaycasts = true;
             group.interactable = true;
-            var tutorial = root.gameObject.AddComponent<GameTutorial>();
+            var tutorial = canvas.gameObject.AddComponent<GameTutorial>();
+            tutorial.owner = parent;
             tutorial.onClosed = onClosed;
+            tutorial.referenceMode = GameSettings.TutorialSeen;
             current = tutorial;
             try
             {
@@ -101,7 +102,8 @@ namespace Bluff.Game
                         EnablePowers = GameSettings.EnablePowers,
                     };
                 tutorial.CaptureFocus();
-                tutorial.Build();
+                Canvas.ForceUpdateCanvases();
+                tutorial.Render();
             }
             catch
             {
@@ -122,8 +124,10 @@ namespace Bluff.Game
             Array.Clear(selected, 0, selected.Length);
             decisions[0] = decisions[1] = -1;
             claim = null;
-            step = example = 0;
-            RenderStep();
+            maskTried = selectionLimitReached = false;
+            Array.Clear(powerDemoUsed, 0, powerDemoUsed.Length);
+            step = example = unlockedStep = 0;
+            Render();
         }
 
         public void Close()
@@ -131,6 +135,7 @@ namespace Bluff.Game
             if (closing || finished)
                 return;
             closing = true;
+            closedFrame = Time.frameCount;
             Destroy(gameObject);
         }
 
@@ -160,66 +165,139 @@ namespace Bluff.Game
             eventSystem.SetSelectedGameObject(null);
         }
 
-        void Build()
+        void Render(bool preservePosition = false, string focusName = null)
         {
-            var dim = UIKit.CreateImage(transform, "Backdrop", null, new Color(0.02f, 0.03f, 0.025f, 0.88f), true);
-            dim.rectTransform.Stretch();
-            panel = UIKit.CreatePanel(transform, "Panel", Theme.Panel, 12f, true).rectTransform;
-            panel.Place(UIKit.Center, Vector2.zero, PanelSize);
-            UIKit.CreateOutline(panel, "Border", Theme.Border, 12f).rectTransform.Stretch();
-            progress = TextAt(panel, "Progress", "", 24, Theme.Muted, 48f, 28f, 760f, 36f);
-            heading = UIKit.CreateHeading(panel, "Heading", "", 52, Theme.Text, TextAnchor.MiddleLeft);
-            Place(heading.rectTransform, 48f, 78f, 984f, 66f);
-            introduction = TextAt(panel, "Introduction", "", 24, Theme.Text, 48f, 148f, 984f, 62f);
-            skip = Control(panel, "Skip", "Lewati", 864f, 24f, 168f, 48f, CompleteOrSkip);
-            back = Control(panel, "Back", "Kembali", 48f, 712f, 168f, 56f, () =>
+            float bodyPosition = preservePosition && bodyScroll != null ? bodyScroll.verticalNormalizedPosition : 1f;
+            float topicPosition = topicScroll != null ? topicScroll.verticalNormalizedPosition : 1f;
+            if (preservePosition && focusName == null && eventSystem != null && eventSystem.currentSelectedGameObject != null)
+                focusName = eventSystem.currentSelectedGameObject.name;
+            if (view != null)
             {
-                if (step <= 0)
-                    return;
-                step--;
-                RenderStep();
-            });
-            next = Control(panel, "Next", "Lanjut", 808f, 712f, 224f, 56f, Advance, true);
-            nextLabel = next.GetComponentInChildren<Text>();
-            TextAt(panel, "PracticeNotice", "Latihan lokal · tidak mengubah permainan", 20, Theme.Muted, 244f, 720f, 544f, 40f);
-            FitPanel();
-            RenderStep();
-        }
-
-        void RenderStep()
-        {
-            if (page != null)
-            {
-                page.gameObject.SetActive(false);
-                Destroy(page.gameObject);
+                view.gameObject.SetActive(false);
+                Destroy(view.gameObject);
             }
-            foreach (var outline in focusOutlines)
-                if (outline != null)
-                    outline.enabled = false;
             controls.Clear();
             focusOutlines.Clear();
-            selectionOutlines.Clear();
-            selectionLabels.Clear();
-            claimOutlines.Clear();
-            page = UIKit.CreateRect("Step " + (step + 1), panel);
-            Place(page, 48f, 216f, 984f, 474f);
-            progress.text = (step + 1) + "/4";
-            back.gameObject.SetActive(step > 0);
-            nextLabel.text = step == 3 ? "Mulai bermain" : "Lanjut";
-            switch (step)
+            bodyScroll = topicScroll = null;
+            viewSize = ((RectTransform)transform).rect.size;
+            view = UIKit.CreateImage(transform, "Guide", null, Theme.Panel, true).rectTransform;
+            view.Stretch();
+            float width = viewSize.x;
+            var title = UIKit.CreateHeading(view, "Guide Title", "Guide", 42, Theme.Text, TextAnchor.MiddleLeft);
+            IconAt(view, SpriteFactory.Emblem(GameIcon.Guide), 36f, 20f, 40f, Color.white);
+            Place(title.rectTransform, 88f, 12f, width - 272f, 56f);
+            var close = Control(view, "Close Guide", "Close", width - 160f, 16f, 120f, 48f, CompleteOrSkip);
+            close.GetComponent<RectTransform>().Place(UIKit.TopRight, new Vector2(-100f, -40f), new Vector2(120f, 48f));
+            UIKit.AddButtonIcon(close, SpriteFactory.Emblem(GameIcon.Close), Color.white, 30f, 8f);
+            close.GetComponentInChildren<Text>().fontSize = 20;
+            var practice = Control(view, "Mode Practice", "Practice", 40f, 78f, 172f, 48f, () => SetMode(false));
+            var reference = Control(view, "Mode Reference", "Rulebook", 224f, 78f, 232f, 48f, () => SetMode(true));
+            UIKit.AddButtonIcon(practice, SpriteFactory.Emblem(GameIcon.Play), Color.white, 32f, 10f);
+            UIKit.AddButtonIcon(reference, SpriteFactory.Emblem(GameIcon.Guide), Color.white, 32f, 10f);
+            reference.GetComponentInChildren<Text>().fontSize = 21;
+            Mark(practice, !referenceMode);
+            Mark(reference, referenceMode);
+
+            if (referenceMode)
             {
-                case 0: BuildHand(); break;
-                case 1: BuildClaim(); break;
-                case 2: BuildChallenge(); break;
-                default: BuildSpecialCards(); break;
+                BuildTopics(width, topicPosition);
+                bodyScroll = ScrollArea(view, "Reference Scroll", 328f, 40f, 146f, 84f);
             }
-            if (step > 0)
-                Register(back);
-            Register(next);
-            Register(skip);
-            next.interactable = CanAdvance();
+            else
+            {
+                float itemWidth = (width - 104f) / 4f;
+                for (int i = 0; i < StepNames.Length; i++)
+                {
+                    int index = i;
+                    var tab = Control(view, "Step " + (i + 1), StepNames[i],
+                        40f + i * (itemWidth + 8f), 138f, itemWidth, 44f, () =>
+                        {
+                            if (index > unlockedStep)
+                                return;
+                            step = index;
+                            Render();
+                        });
+                    tab.interactable = i <= unlockedStep;
+                    UIKit.AddButtonIcon(tab, StepIcon(i), Color.white, 24f, 12f);
+                    tab.GetComponentInChildren<Text>().fontSize = 18;
+                    Mark(tab, i == step);
+                }
+                bodyScroll = ScrollArea(view, "Practice Scroll", 40f, 40f, 198f, 84f);
+            }
+            page = bodyScroll.content;
+            pageWidth = Mathf.Max(240f, width - (referenceMode ? 392f : 104f));
+            page.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, pageWidth);
+            float height;
+            if (referenceMode)
+                height = BuildReference();
+            else
+            {
+                switch (step)
+                {
+                    case 0: height = BuildHand(); break;
+                    case 1: height = BuildClaim(); break;
+                    case 2: height = BuildChallenge(); break;
+                    default: height = BuildSpecialCards(); break;
+                }
+            }
+            page.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, height + 16f);
+            if (referenceMode)
+                FooterButton("Next", "Done", true, CompleteOrSkip);
+            else
+            {
+                if (step > 0)
+                    FooterButton("Back", "Back", false, () => { step--; Render(); });
+                var next = FooterButton("Next", step == 3 ? "Done" : "Next", true, Advance);
+                next.interactable = CanAdvance();
+            }
+            Canvas.ForceUpdateCanvases();
+            bodyScroll.verticalNormalizedPosition = bodyPosition;
             builtFrame = Time.frameCount;
-            FocusFirst();
+            if (focusName == null)
+                focusName = referenceMode ? TopicControlName(topic) : step == 0 ? "Sample 0" : step == 1 ? "Claim Matahari" : step == 2 ? (config.StartingBullets > 0 ? "Accuse" : "Trust") : "Try Mask";
+            Focus(controls.Find(button => button.name == focusName) ?? controls[0], !preservePosition);
+        }
+
+        void SetMode(bool reference)
+        {
+            referenceMode = reference;
+            Render();
+        }
+
+        void OpenTopic(int index)
+        {
+            referenceMode = true;
+            topic = index;
+            Render(false, TopicControlName(index));
+        }
+
+        static string TopicControlName(int index) => index < TopicNames.Length ? "Topic " + index : "Power " + Powers.All[index - TopicNames.Length];
+
+        void BuildTopics(float width, float position)
+        {
+            topicScroll = ScrollArea(view, "Topic Scroll", 40f, width - 304f, 146f, 84f);
+            float y = 4f;
+            for (int i = 0; i < TopicNames.Length + Powers.All.Count; i++)
+            {
+                if (i == TopicNames.Length)
+                {
+                    y += 12f;
+                    TextAt(topicScroll.content, "Powers Heading", "Power cards", 24, Theme.Muted, 4f, y, 232f, 34f);
+                    y += 42f;
+                }
+                int index = i;
+                string label = i < TopicNames.Length ? TopicNames[i] : PowerText.Name(Powers.All[i - TopicNames.Length]);
+                float height = i == 2 ? 66f : 50f;
+                var button = Control(topicScroll.content, TopicControlName(i), label, 4f, y, 232f, height, () => OpenTopic(index));
+                UIKit.AddButtonIcon(button, TopicIcon(i), Color.white, 28f, 12f);
+                button.GetComponentInChildren<Text>().fontSize = 20;
+                button.GetComponentInChildren<Text>().alignment = TextAnchor.MiddleLeft;
+                Mark(button, topic == i);
+                y += height + 8f;
+            }
+            topicScroll.content.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, y + 8f);
+            Canvas.ForceUpdateCanvases();
+            topicScroll.verticalNormalizedPosition = position;
         }
 
         int SelectedCount
@@ -235,143 +313,148 @@ namespace Bluff.Game
         }
 
         int SelectionLimit => Math.Min(sampleHand.Length, config.MaxCardsPerPlay);
+        static string CardCount(int maximum) => maximum == 1 ? "1 card" : "1–" + maximum + " cards";
 
-        void BuildHand()
+        float PageHeading(string title, string instruction)
         {
-            heading.text = "Habiskan kartu di tangan";
-            introduction.text = "Kosongkan tangan lebih dulu. Menang jika taruhan terakhir tidak dituduh, atau dituduh tetapi terbukti jujur.";
-            string count = SelectionLimit == 1 ? "1 kartu" : "1–" + SelectionLimit + " kartu";
-            TextAt(page, "Task", "Pilih " + count + " dari tangan contoh ini.", 26, Theme.Text, 0f, 0f, 984f, 40f);
+            var badge = UIKit.CreatePanel(page, "Topic Emblem", Theme.PanelLight, 8f);
+            Place(badge.rectTransform, 4f, 0f, 56f, 56f);
+            IconAt(badge.transform, referenceMode ? TopicIcon(topic) : StepIcon(step), 6f, 6f, 44f, Color.white);
+            float y = Mathf.Max(56f, Paragraph(page, "Heading", title, 38, Theme.Text, 76f, 0f, pageWidth - 80f, true)) + 8f;
+            return y + Paragraph(page, "Instruction", instruction, 22, Theme.Muted, 4f, y, pageWidth - 8f) + 22f;
+        }
+
+        static Sprite StepIcon(int index) => index == 0 ? SpriteFactory.Emblem(GameIcon.Cards) : index == 1 ? SpriteFactory.ElementEmblem(Element.Matahari) :
+            index == 2 ? SpriteFactory.Emblem(GameIcon.Challenge) : SpriteFactory.ElementEmblem(Element.Topeng);
+
+        static Sprite TopicIcon(int index) => index >= TopicNames.Length ? SpriteFactory.PowerEmblem(Powers.All[index - TopicNames.Length]) :
+            index == 0 ? SpriteFactory.Emblem(GameIcon.Check) : index == 1 ? SpriteFactory.Emblem(GameIcon.Cards) : index == 2 ? SpriteFactory.Emblem(GameIcon.Challenge) :
+            index == 3 ? SpriteFactory.Emblem(GameIcon.Restart) : SpriteFactory.ElementEmblem(Element.Topeng);
+
+        static Image IconAt(Transform parent, Sprite sprite, float x, float y, float size, Color color)
+        {
+            var icon = UIKit.CreateImage(parent, "Icon", sprite, color);
+            icon.preserveAspect = true;
+            Place(icon.rectTransform, x, y, size, size);
+            return icon;
+        }
+
+        float BuildHand()
+        {
+            float y = PageHeading("Select " + CardCount(SelectionLimit), "Click to select a card. Click again to deselect."
+                + (config.MaxCardsPerPlay > sampleHand.Length ? " Match limit: " + config.MaxCardsPerPlay + " cards per play." : ""));
+            const float cardWidth = 180f;
             for (int i = 0; i < sampleHand.Length; i++)
             {
                 int index = i;
-                var button = Control(page, "Sample " + i, "", i * 178f, 64f, CardSize.x, CardSize.y, () => ToggleCard(index));
-                CardFace(button.transform, sampleHand[i].Element, false, 0f, 0f);
-                var outline = UIKit.CreateOutline(button.transform, "Selected", Theme.Gold, 10f);
-                outline.rectTransform.Stretch(-3f, -3f, -3f, -3f);
-                selectionOutlines.Add(outline);
-                selectionLabels.Add(TextAt(page, "Selection " + i, "", 22, Theme.Text, i * 178f, 296f, 160f, 34f, TextAnchor.MiddleCenter));
+                var button = Control(page, "Sample " + i, "", 4f + i * 204f, y + (selected[i] ? 0f : 6f), cardWidth, 252f, () => ToggleCard(index));
+                CardFace(button.transform, sampleHand[i].Element, false, 0f, 0f, cardWidth);
+                Mark(button, selected[i]);
+                if (selected[i])
+                    TextAt(page, "Selection " + i, "Selected", 24, Theme.Gold, 4f + i * 204f, y + 266f, cardWidth, 34f, TextAnchor.MiddleCenter);
             }
-            var goal = UIKit.CreateHeading(page, "Goal", "Taruh tertutup,\nsebutkan klaimmu.", 36, Theme.Text, TextAnchor.UpperLeft);
-            Place(goal.rectTransform, 586f, 74f, 398f, 98f);
-            TextAt(page, "PlayRule", "Saat giliranmu, taruh 1–" + config.MaxCardsPerPlay + " kartu tertutup.\nLawan hanya melihat jumlah dan klaimmu, bukan isi kartu.", 24, Theme.Text, 586f, 190f, 398f, 130f);
-            feedback = Feedback(352f, 116f);
-            RefreshSelection();
+            bool stacked = pageWidth < 960f;
+            float x = stacked ? 4f : 640f;
+            float infoY = stacked ? y + 316f : y + 12f;
+            float infoWidth = pageWidth - x - 4f;
+            infoY += Paragraph(page, "Play Heading", "Play face down", 32, Theme.Text, x, infoY, infoWidth, true) + 12f;
+            infoY += Paragraph(page, "Play Rule", "Opponents see the count and your claim. The cards stay hidden.", 24, Theme.Text, x, infoY, infoWidth) + 16f;
+            infoY += Paragraph(page, "Win Rule", "Empty your hand. Your final play must pass or prove honest.", 24, Theme.Text, x, infoY, infoWidth) + 20f;
+            string status = selectionLimitReached
+                ? "Maximum " + SelectionLimit + " cards. Deselect one to choose another."
+                : SelectedCount == 0 ? "Select at least 1 card to continue." : SelectedCount + " cards selected. Next, choose your claim.";
+            infoY += Paragraph(page, "Selection Summary", status, 24, selectionLimitReached ? Theme.Text : Theme.Gold, x, infoY, infoWidth);
+            return Mathf.Max(y + 304f, infoY);
         }
 
         void ToggleCard(int index)
         {
-            if (!selected[index] && SelectedCount >= SelectionLimit)
+            selectionLimitReached = !selected[index] && SelectedCount >= SelectionLimit;
+            if (!selectionLimitReached)
             {
-                feedback.text = "Maksimal " + SelectionLimit + " kartu dalam contoh ini. Klik kartu yang dipilih untuk membatalkannya.";
-                return;
+                selected[index] = !selected[index];
+                claim = null;
+                unlockedStep = SelectedCount > 0 ? Math.Min(unlockedStep, 1) : 0;
             }
-            selected[index] = !selected[index];
-            claim = null;
-            RefreshSelection();
-            next.interactable = CanAdvance();
+            Render(true, "Sample " + index);
         }
 
-        void RefreshSelection()
+        float BuildClaim()
         {
-            for (int i = 0; i < selected.Length; i++)
-            {
-                selectionOutlines[i].enabled = selected[i];
-                selectionLabels[i].text = selected[i] ? "Dipilih" : "Pilih";
-            }
-            int count = SelectedCount;
-            feedback.text = count == 0
-                ? "Klik kartu untuk memilihnya. Kamu akan menentukan klaim pada langkah berikutnya."
-                : count + " kartu dipilih; " + (sampleHand.Length - count) + " tersisa di tangan contoh.\nBelum tentu aman: lawan masih boleh menuduh taruhan terakhirmu.";
-        }
-
-        void BuildClaim()
-        {
-            heading.text = "Kartu asli, klaim pilihanmu";
-            introduction.text = "Kamu membuka ronde baru: pilih salah satu dari 6 elemen. Klaimmu tidak harus sama dengan kartu.";
-            TextAt(page, "SelectedTitle", "Kartu yang kamu pilih", 24, Theme.Muted, 0f, 0f, 550f, 38f);
+            float y = PageHeading("Choose an element", "The leader chooses an element. Everyone else follows that element.");
             int position = 0;
             for (int i = 0; i < sampleHand.Length; i++)
-            {
                 if (selected[i])
-                    CardFace(page, sampleHand[i].Element, false, position++ * 178f, 54f);
-            }
-            TextAt(page, "ClaimTitle", "Kamu mengaku membawa…", 24, Theme.Text, 568f, 0f, 416f, 38f);
+                    CardFace(page, sampleHand[i].Element, false, 4f + position++ * 176f, y + 4f, 160f);
+            bool stacked = pageWidth < 1040f;
+            float x = stacked ? 4f : 548f;
+            float claimY = stacked ? y + 248f : y;
+            float buttonWidth = (pageWidth - x - 20f) / 2f;
             for (int i = 0; i < Elements.Claimable.Count; i++)
             {
                 Element element = Elements.Claimable[i];
-                var button = Control(page, "Claim " + element, "", 568f + i % 2 * 214f, 54f + i / 2 * 82f, 202f, 70f, () => ChooseClaim(element));
-                var icon = UIKit.CreateImage(button.transform, "Icon", SpriteFactory.ElementIcon(element), Theme.Text);
-                icon.preserveAspect = true;
-                Place(icon.rectTransform, 14f, 20f, 30f, 30f);
-                TextAt(button.transform, "Name", Theme.ElementName(element), 24, Theme.Text, 54f, 12f, 136f, 46f);
-                var outline = UIKit.CreateOutline(button.transform, "Chosen", Theme.Gold, 8f);
-                outline.rectTransform.Stretch(-2f, -2f, -2f, -2f);
-                claimOutlines.Add(outline);
+                var button = Control(page, "Claim " + element, Theme.ElementName(element),
+                    x + i % 2 * (buttonWidth + 16f), claimY + i / 2 * 76f, buttonWidth, 64f, () =>
+                    {
+                        claim = element;
+                        Render(true, "Claim " + element);
+                    });
+                UIKit.AddButtonIcon(button, SpriteFactory.ElementEmblem(element), Theme.Text, 30f);
+                Mark(button, claim.HasValue && claim.Value == element);
             }
-            selectionSummary = TextAt(page, "ClaimPreview", "", 24, Theme.Text, 0f, 292f, 984f, 40f);
-            feedback = Feedback(346f, 122f);
-            RefreshClaim();
-        }
-
-        void ChooseClaim(Element element)
-        {
-            claim = element;
-            RefreshClaim();
-            next.interactable = CanAdvance();
-        }
-
-        void RefreshClaim()
-        {
-            for (int i = 0; i < claimOutlines.Count; i++)
-                claimOutlines[i].enabled = claim.HasValue && claim.Value == Elements.Claimable[i];
+            float bottom = Mathf.Max(y + 236f, claimY + 216f) + 14f;
+            string explanation;
             if (!claim.HasValue)
+                explanation = "You may bluff. Pick an element to see the result.";
+            else
             {
-                selectionSummary.text = "Pilih elemen untuk melihat apakah klaimmu jujur atau bohong.";
-                feedback.text = "Pada ronde yang sudah berjalan, wajib ikuti elemen ronde.\nKamu boleh Pass, tetapi pembuka ronde wajib menaruh kartu.";
-                return;
+                bool honest = true;
+                for (int i = 0; i < sampleHand.Length; i++)
+                    if (selected[i] && !sampleHand[i].Matches(claim.Value))
+                        honest = false;
+                explanation = "«" + SelectedCount + " " + Theme.ElementName(claim.Value) + "» — " + (honest
+                    ? "honest: every card matches."
+                    : "a bluff: some cards do not match. This is allowed.");
             }
-            bool honest = true;
-            for (int i = 0; i < sampleHand.Length; i++)
-                if (selected[i] && !sampleHand[i].Matches(claim.Value))
-                    honest = false;
-            selectionSummary.text = "Klaimmu: «" + SelectedCount + " " + Theme.ElementName(claim.Value) + "».";
-            feedback.text = (honest
-                ? "Jujur: semua kartu cocok dengan klaimmu."
-                : "Bohong: ada kartu yang tidak cocok. Ini boleh, tetapi berisiko dituduh.")
-                + "\nSesudahmu, klaim tetap " + Theme.ElementName(claim.Value) + " sampai ronde berakhir; pemain berikutnya boleh Pass.";
+            bottom += Paragraph(page, "Claim Result", explanation, 24, Theme.Gold, 4f, bottom, pageWidth - 8f) + 10f;
+            bottom += Paragraph(page, "Follow Round", "Next turn: follow the element or pass. The leader must play.", 24, Theme.Text, 4f, bottom, pageWidth - 8f) + 10f;
+            bottom += Paragraph(page, "Burn Rule", "All " + (config.PlayerCount - 1) + " opponents pass in a row: the pile burns and the last player leads again.", 24, Theme.Text, 4f, bottom, pageWidth - 8f);
+            return bottom;
         }
 
-        void BuildChallenge()
+        float BuildChallenge()
         {
-            heading.text = "Tuduh bohong atau percaya?";
-            introduction.text = "Coba dua taruhan contoh. Dalam permainan, hanya taruhan terbaru yang bisa dituduh selama jendela tuduhan.";
-            for (int i = 0; i < decisions.Length; i++)
-            {
-                int index = i;
-                string label = "Contoh " + (i + 1) + (decisions[i] >= 0 ? " · selesai" : "");
-                var tab = Control(page, "Example " + i, label, i * 230f, 0f, 218f, 46f, () =>
-                {
-                    example = index;
-                    RenderStep();
-                });
-                UIKit.CreateOutline(tab.transform, "Active", Theme.Gold, 8f).rectTransform.Stretch();
-                tab.transform.Find("Active").gameObject.SetActive(example == i);
-            }
-            TextAt(page, "NoPower", "Contoh tanpa Kartu Kuasa", 22, Theme.Muted, 530f, 0f, 454f, 46f, TextAnchor.MiddleRight);
+            float y = PageHeading("BLUFF! or let pass?", "An opponent claims '1 Sun'. Choose an action to see what happens.");
             bool answered = decisions[example] >= 0;
-            CardFace(page, example == 0 ? Element.Daun : Element.Matahari, !answered, 56f, 58f);
-            TextAt(page, "RevealNotice", answered ? "Dibuka untuk latihan" : "Kartu contoh tertutup", 20, Theme.Muted, 0f, 284f, 272f, 30f, TextAnchor.MiddleCenter);
-            var title = UIKit.CreateHeading(page, "OpponentClaim", "Lawan: «1 Matahari»", 38, Theme.Text, TextAnchor.MiddleLeft);
-            Place(title.rectTransform, 304f, 70f, 680f, 52f);
-            TextAt(page, "Pile", "2 kartu sebelumnya + 1 kartu ini = 3 di tumpukan.\nLawan masih punya kartu di tangan.", 24, Theme.Text, 304f, 132f, 680f, 76f);
-            TextAt(page, "Bullets", "Peluru latihan: " + config.StartingBullets + (config.StartingBullets == 0 ? " · kamu hanya bisa percaya." : " · tuduhan memakai 1 peluru."), 22, Theme.Muted, 304f, 206f, 680f, 40f);
-            var accuse = Control(page, "Accuse", "Tuduh bohong", 304f, 264f, 316f, 56f, () => Decide(true));
+            bool revealed = decisions[example] == 1;
+            CardFace(page, example == 0 ? Element.Daun : Element.Matahari, !revealed, 4f, y + 4f, 180f);
+            TextAt(page, "Reveal Notice", revealed ? "Revealed card" : "Hidden card", 24, Theme.Text, 0f, y + 266f, 188f, 36f, TextAnchor.MiddleCenter);
+            float x = 224f;
+            float width = pageWidth - x - 4f;
+            float infoY = y;
+            infoY += Paragraph(page, "Pile", "Pile: 3 cards. The opponent still has cards in hand.", 24, Theme.Text, x, infoY, width) + 10f;
+            infoY += Paragraph(page, "Bullets", "Practice starting bullets: " + config.StartingBullets + ". No powers."
+                + (config.StartingBullets == 0 ? " BLUFF! requires a bullet." : " BLUFF! uses 1 bullet."), 24, Theme.Text, x, infoY, width) + 16f;
+            float actionWidth = Mathf.Min(240f, (width - 16f) / 2f);
+            var accuse = Control(page, "Accuse", "BLUFF!", x, infoY, actionWidth, 56f, () => Decide(true));
             accuse.interactable = config.StartingBullets > 0;
-            Control(page, "Trust", "Percaya", 638f, 264f, 316f, 56f, () => Decide(false));
-            feedback = Feedback(330f, 138f);
-            feedback.fontSize = 22;
-            feedback.text = answered ? ChallengeExplanation() : "Pilih tindakan, lalu lihat isi kartu contoh dan akibatnya.\nSelesaikan kedua contoh sebelum melanjutkan.";
+            var trust = Control(page, "Trust", "Let pass", x + actionWidth + 16f, infoY, actionWidth, 56f, () => Decide(false));
+            UIKit.AddButtonIcon(accuse, SpriteFactory.Emblem(GameIcon.Challenge), Theme.Text, 26f, 12f);
+            UIKit.AddButtonIcon(trust, SpriteFactory.Emblem(GameIcon.Check), Theme.Text, 26f, 12f);
+            Mark(accuse, decisions[example] == 1);
+            Mark(trust, decisions[example] == 0);
+            infoY += 74f;
+            infoY += Paragraph(page, "Challenge Result", answered ? ChallengeExplanation() : ChallengeRisk(), 24, Theme.Text, x, infoY, width) + 16f;
+            if (answered)
+            {
+                Control(page, "Example " + (1 - example), "Try another play", x, infoY, 256f, 48f, () =>
+                {
+                    example = 1 - example;
+                    Render(false, config.StartingBullets > 0 ? "Accuse" : "Trust");
+                });
+                infoY += 52f;
+            }
+            return Mathf.Max(y + 306f, infoY);
         }
 
         void Decide(bool accuse)
@@ -379,115 +462,394 @@ namespace Bluff.Game
             if (accuse && config.StartingBullets == 0)
                 return;
             decisions[example] = accuse ? 1 : 0;
-            RenderStep();
+            Render(true, accuse ? "Accuse" : "Trust");
+        }
+
+        string ChallengeRisk()
+        {
+            return "BLUFF! against a lie: opponent takes all 3 cards; "
+                + (config.RefundBulletOnHit ? "bullet refunded." : "1 bullet spent.")
+                + "\nBLUFF! against an honest play: you take " + (config.WrongShotTakesWholePile ? "all 3 cards" : "the challenged card") + "; 1 bullet spent."
+                + "\nLet pass: cards stay hidden. No bullet spent.";
         }
 
         string ChallengeExplanation()
         {
-            bool honest = example == 1;
-            bool accused = decisions[example] == 1;
-            string result;
-            if (!accused)
-            {
-                result = honest ? "Percaya: Matahari memang jujur." : "Percaya: Daun bukan Matahari; bohong lolos.";
-                result += " Tanpa tuduhan lain, giliran lanjut; pelurumu tetap " + config.StartingBullets + ".";
-                if (config.StartingBullets == 0)
-                    result += "\nTanpa peluru, kamu tidak bisa menuduh.";
-                else if (honest)
-                    result += config.WrongShotTakesWholePile
-                        ? "\nJika dituduh: kamu ambil semua 3 kartu; 1 peluru habis."
-                        : "\nJika dituduh: kamu ambil 1 kartu tertuduh; 1 peluru habis.";
-                else
-                    result += "\nJika dituduh: lawan ambil semua 3 kartu; " + (config.RefundBulletOnHit ? "peluru kembali." : "1 peluru habis.");
-            }
-            else if (!honest)
-            {
-                result = "Tuduhan tepat: isinya Daun. Lawan mengambil semua 3 kartu; kamu membuka ronde baru. ";
-                result += config.RefundBulletOnHit
-                    ? "1 peluru dikembalikan: tetap " + config.StartingBullets + "."
-                    : "Refund nonaktif: 1 peluru habis, tersisa " + (config.StartingBullets - 1) + ".";
-            }
-            else
-            {
-                result = "Salah tuduh: isinya Matahari. ";
-                result += config.WrongShotTakesWholePile
-                    ? "Kamu mengambil semua 3 kartu; lawan membuka ronde baru. "
-                    : "Kamu hanya mengambil 1 kartu yang dituduh; ronde berlanjut. ";
-                result += "1 peluru habis, tersisa " + (config.StartingBullets - 1) + ".";
-            }
-            return result + "\n" + (decisions[0] < 0 || decisions[1] < 0
-                ? "Coba contoh lainnya. Di game, percaya tidak membuka kartu."
-                : "Kedua contoh selesai. Di game, percaya tidak membuka kartu.");
+            if (decisions[example] == 0)
+                return "Let pass: cards stay hidden. Your bullets: " + config.StartingBullets + ". If no one challenges, the next turn begins and the pile stays.";
+            if (example == 0)
+                return "Bluff: Leaf is not Sun. The opponent takes all 3 cards and you lead a new round. "
+                    + (config.RefundBulletOnHit ? "Bullet refunded. Remaining: " + config.StartingBullets + "." : "1 bullet spent. Remaining: " + (config.StartingBullets - 1) + ".");
+            return "Honest: the card is Sun. " + (config.WrongShotTakesWholePile
+                ? "You take all 3 cards. The opponent leads a new round. "
+                : "You take the challenged card. The other 2 stay on the table and the round continues. ")
+                + "1 bullet spent. Remaining: " + (config.StartingBullets - 1) + ".";
         }
 
-        void BuildSpecialCards()
+        float BuildSpecialCards()
         {
-            string wildExample = config.MaxCardsPerPlay >= 2
-                ? "Topeng + Matahari, diklaim «2 Matahari» = jujur."
-                : "Topeng, diklaim «1 Matahari» = jujur.";
-            heading.text = "Topeng dan Kartu Kuasa";
-            introduction.text = "Topeng membantu klaimmu. Kartu Kuasa punya aturan sendiri—baca efeknya sebelum dipakai.";
-            CardFace(page, Element.Topeng, false, 0f, 8f);
-            var wildTitle = UIKit.CreateHeading(page, "WildTitle", "Topeng selalu cocok", 36, Theme.Text, TextAnchor.MiddleLeft);
-            Place(wildTitle.rectTransform, 192f, 8f, 792f, 50f);
-            TextAt(page, "WildRule", "Topeng sah untuk semua 6 elemen.\nContoh: " + wildExample + "\nTopeng bukan elemen yang bisa dipilih sebagai klaim."
-                + (config.WildCount == 0 ? "\nSetelan ini tidak memasukkan Topeng ke dek." : ""), 24, Theme.Text, 192f, 68f, 792f, 154f);
-            var powerRect = UIKit.CreatePanel(page, "PowerExample", Theme.CardFace, 10f).rectTransform;
-            Place(powerRect, 0f, 248f, 160f, 224f);
-            var art = UIKit.CreateImage(powerRect, "Icon", SpriteFactory.PowerIcon(PowerType.MataElang), Theme.TextDark);
-            art.preserveAspect = true;
-            Place(art.rectTransform, 30f, 36f, 100f, 100f);
-            TextAt(powerRect, "Name", PowerText.Name(PowerType.MataElang), 22, Theme.TextDark, 8f, 160f, 144f, 42f, TextAnchor.MiddleCenter);
-            var powerTitle = UIKit.CreateHeading(page, "PowerTitle", config.EnablePowers ? "Satu kuasa, sekali per permainan" : "Kartu Kuasa dinonaktifkan", 36, Theme.Text, TextAnchor.MiddleLeft);
-            Place(powerTitle.rectTransform, 192f, 248f, 792f, 50f);
-            TextAt(page, "PowerRule", (config.EnablePowers
-                ? "Setiap pemain mendapat 1 kuasa acak, hanya sekali pakai."
-                : "Tidak ada kuasa dibagikan dengan setelan ini.")
-                + "\nContoh Mata Elang: intip taruhan terbaru lawan saat jendela tuduhan.\nKuasa lain punya waktu dan batas berbeda; Cermin aktif otomatis.\nLatihan ini tidak memakai atau memberikan kuasa sungguhan.", 23, Theme.Text, 192f, 306f, 792f, 166f);
+            float y = PageHeading("Try a Mask", "Example claim: '1 Sun'. Click the Mask to see if it matches.");
+            var mask = Control(page, "Try Mask", "", 4f, y + (maskTried ? 0f : 6f), 180f, 252f, () =>
+            {
+                maskTried = true;
+                Render(true, "Try Mask");
+            });
+            CardFace(mask.transform, Element.Topeng, false, 0f, 0f, 180f);
+            Mark(mask, maskTried);
+            if (maskTried)
+                TextAt(page, "Mask Result", "Match", 24, Theme.Gold, 4f, y + 266f, 180f, 34f, TextAnchor.MiddleCenter);
+            PowerFace(page, PowerType.MataElang, 208f, y + 6f, 180f);
+            float x = pageWidth < 900f ? 4f : 432f;
+            float infoY = pageWidth < 900f ? y + 316f : y;
+            float width = pageWidth - x - 4f;
+            infoY += Paragraph(page, "Wild Rule", maskTried ? "Honest. A Mask matches all 6 elements." : "A Mask can represent any element.", 24, Theme.Text, x, infoY, width) + 12f;
+            if (config.WildCount == 0)
+                infoY += Paragraph(page, "Wild Disabled", "This is an example only. Masks are disabled in this deck.", 24, Theme.Muted, x, infoY, width) + 12f;
+            infoY += Paragraph(page, "Power Heading", config.EnablePowers ? "One power. One use." : "Powers disabled", 32, Theme.Text, x, infoY, width, true) + 10f;
+            infoY += Paragraph(page, "Power Rule", config.EnablePowers
+                ? "Each player gets a random power. Eagle Eye peeks at the latest play during the challenge window."
+                : "No powers are dealt. Eagle Eye is only an example here.", 24, Theme.Text, x, infoY, width) + 16f;
+            Control(page, "All Powers", "Explore powers", x, infoY, 260f, 50f, () => OpenTopic(TopicNames.Length));
+            return Mathf.Max(y + 306f, infoY + 54f);
         }
 
-        void CardFace(Transform parent, Element element, bool faceDown, float x, float y)
+        float BuildReference()
         {
+            if (topic >= TopicNames.Length)
+                return BuildPowerReference(Powers.All[topic - TopicNames.Length]);
+            float y = PageHeading(TopicNames[topic], topic == 0 ? "Rules reflect your current match settings." : "");
+            y = BuildRuleMap(y);
+            switch (topic)
+            {
+                case 0:
+                    Rule(ref y, "Winning", "Empty your hand first. Your final play must pass unchallenged or prove honest. If caught bluffing, take the pile and keep playing.");
+                    int minimum = config.TotalCards / config.PlayerCount;
+                    string deal = config.TotalCards % config.PlayerCount == 0 ? minimum.ToString() : minimum + "–" + (minimum + 1);
+                    Rule(ref y, "Setup", config.PlayerCount + " players. " + config.TotalCards + " cards dealt: " + deal + " cards per player. Starting bullets: " + config.StartingBullets + " bullets.");
+                    Rule(ref y, "The deck", "6 elements x " + config.CopiesPerElement + " cards, plus " + config.WildCount + " Masks. Elements: Sun, Moon, Star, Lightning, Water, Leaf.");
+                    Rule(ref y, "Power cards", PowerAvailability());
+                    break;
+                case 1:
+                    Rule(ref y, "Play cards", "On your turn, select " + CardCount(config.MaxCardsPerPlay) + " and play face down. Everyone sees the count and claim; the cards stay hidden.");
+                    Rule(ref y, "Round element", "The leader chooses one of 6 elements. Other players follow it or pass until the round ends. The leader must play.");
+                    Rule(ref y, "Bluffing is allowed", "All cards match or are Masks: honest. Any card does not match: bluff. You cannot lie about the card count.");
+                    Rule(ref y, "After a play", "Other players may challenge with BLUFF! or let the play pass. With no challenge, the next turn begins. Let pass does not skip your turn.");
+                    break;
+                case 2:
+                    Rule(ref y, "BLUFF!", "Challenge only the latest opponent play during the challenge window. You need 1 bullet; the first challenger acts. You cannot challenge yourself or Shield. Starting bullets: " + config.StartingBullets + ".");
+                    Rule(ref y, "Opponent bluffed", "The player takes the whole pile. The challenger leads a new round. " + (config.RefundBulletOnHit ? "The challenger's bullet is refunded." : "No refund: 1 bullet spent.") + " Mirror can change this outcome.");
+                    Rule(ref y, "Opponent was honest", (config.WrongShotTakesWholePile
+                        ? "The challenger takes the whole pile. The player leads a new round."
+                        : "The challenger takes only the challenged cards. The rest of the pile stays; the next player takes their turn.") + " The challenger loses 1 bullet. If this was the player's final card, that player wins.");
+                    Rule(ref y, "Let pass", "Let pass keeps the cards hidden and saves your bullet. Others can still challenge. If nobody challenges before time runs out, the next turn begins, or the player wins with an empty hand.");
+                    break;
+                case 3:
+                    Rule(ref y, "Pass", "On your turn, pass to skip playing. The round leader cannot pass.");
+                    Rule(ref y, "Burning the pile", "If all other players pass in a row (" + (config.PlayerCount - 1) + " passes for " + config.PlayerCount + " players), the whole pile is removed from the game.");
+                    Rule(ref y, "Next leader", "The last player to play cards leads a new round and chooses an element. Every new play resets the pass count.");
+                    Rule(ref y, "Passing vs letting pass", "Let pass declines a challenge. It does not count toward consecutive passes and does not burn the pile.");
+                    break;
+                default:
+                    CardFace(page, Element.Topeng, false, 4f, y, 180f);
+                    float textY = y;
+                    float x = 216f;
+                    textY += Paragraph(page, "Wild Explanation", "Masks match every claimed element. Mask itself cannot be chosen as the round element.", 24, Theme.Text, x, textY, pageWidth - x - 4f) + 20f;
+                    textY += Paragraph(page, "Wild Example", config.MaxCardsPerPlay >= 2
+                        ? "Mask + Sun claimed as '2 Sun': honest. A Mask does not make a Leaf card match Sun."
+                        : "Mask claimed as '1 Sun': honest. This match allows only 1 card per play.", 24, Theme.Text, x, textY, pageWidth - x - 4f) + 20f;
+                    textY += Paragraph(page, "Wild Count", "Current deck: " + config.WildCount + " Masks. " + (config.WildCount == 0 ? "No Masks are dealt." : "There are " + config.MatchesPerElement + " matching cards per element, including Masks."), 24, Theme.Text, x, textY, pageWidth - x - 4f);
+                    y = Mathf.Max(y + 268f, textY);
+                    break;
+            }
+            return y;
+        }
+
+        string PowerAvailability() => config.EnablePowers
+            ? "Each player gets one different, secret random power. It can be used once per match."
+            : "Powers are disabled for this match. You can still explore them in this guide.";
+
+        float BuildPowerReference(PowerType power)
+        {
+            float y = PageHeading(PowerText.Name(power), config.EnablePowers ? "Single-use, when its conditions are met." : "Powers are disabled for this match.");
+            y = BuildPowerDemo(power, y);
+            Rule(ref y, "Effect", PowerText.Long(power));
+            string limit;
+            switch (power)
+            {
+                case PowerType.MataElang:
+                    limit = "Only you see the cards. Peeking neither challenges nor spends a bullet. Choose BLUFF! or Let pass afterwards.";
+                    break;
+                case PowerType.Tameng:
+                    limit = "Arm when playing cards. Keep at least 1 card in hand; your final play cannot be protected.";
+                    break;
+                case PowerType.Bakar:
+                case PowerType.Hadiah:
+                    limit = "Select " + CardCount(Powers.MaxPowerCards) + "; keep at least 1 card. This power does not end your turn. Play cards or pass as the round allows.";
+                    break;
+                case PowerType.Badai:
+                    limit = "Cannot be used by the round leader. After burning the pile, lead a new round with any element.";
+                    break;
+                default:
+                    limit = "Triggers only when your bluff is caught and you still have cards. The challenger takes the pile and loses a bullet with no refund. Does not protect your final play.";
+                    break;
+            }
+            Rule(ref y, "Requirements", limit);
+            return y;
+        }
+
+        void Rule(ref float y, string title, string text)
+        {
+            var panel = UIKit.CreatePanel(page, title + " Panel", Theme.PanelLight.WithAlpha(.65f), 8f);
+            float width = pageWidth - 8f;
+            Sprite icon = title == "Winning" || title == "Let pass" || title == "Opponent was honest" ? SpriteFactory.Emblem(GameIcon.Check) :
+                title == "BLUFF!" || title == "Opponent bluffed" ? SpriteFactory.Emblem(GameIcon.Challenge) :
+                title == "Bluffing is allowed" ? SpriteFactory.ElementEmblem(Element.Topeng) :
+                title == "Burning the pile" ? SpriteFactory.PowerEmblem(PowerType.Bakar) :
+                title == "Requirements" ? SpriteFactory.Emblem(GameIcon.Clock) : TopicIcon(topic);
+            IconAt(panel.transform, icon, 16f, 20f, 30f, Color.white);
+            float height = 16f + Paragraph(panel.transform, title + " Heading", title, 28, Theme.Text, 64f, 16f, width - 84f, true) + 6f;
+            height += Paragraph(panel.transform, title + " Rule", text, 22, Theme.Text, 64f, height, width - 84f) + 18f;
+            Place(panel.rectTransform, 4f, y, width, height);
+            y += height + 12f;
+        }
+
+        float BuildRuleMap(float y)
+        {
+            string[] labels;
+            Sprite[] icons;
+            int[] practiceSteps;
+            switch (topic)
+            {
+                case 0:
+                case 1:
+                    labels = new[] { "Select cards", "Make a claim", "Challenge a play" };
+                    icons = new[] { SpriteFactory.Emblem(GameIcon.Cards), SpriteFactory.ElementEmblem(Element.Matahari), SpriteFactory.Emblem(GameIcon.Challenge) };
+                    practiceSteps = new[] { 0, 1, 2 };
+                    break;
+                case 2:
+                    labels = new[] { "Read the claim", "BLUFF!", "Let pass" };
+                    icons = new[] { SpriteFactory.Emblem(GameIcon.Cards), SpriteFactory.Emblem(GameIcon.Challenge), SpriteFactory.Emblem(GameIcon.Check) };
+                    practiceSteps = new[] { 1, 2, 2 };
+                    break;
+                case 3:
+                    labels = new[] { "Follow the element", "Pass", "New round" };
+                    icons = new[] { SpriteFactory.ElementEmblem(Element.Matahari), SpriteFactory.Emblem(GameIcon.Back), SpriteFactory.Emblem(GameIcon.Restart) };
+                    practiceSteps = new[] { 1, 1, 1 };
+                    break;
+                default:
+                    labels = new[] { "Mask", "Every element", "Try a card" };
+                    icons = new[] { SpriteFactory.ElementEmblem(Element.Topeng), SpriteFactory.ElementEmblem(Element.Matahari), SpriteFactory.Emblem(GameIcon.Play) };
+                    practiceSteps = new[] { 3, 3, 3 };
+                    break;
+            }
+            float width = (pageWidth - 32f) / 3f;
+            for (int i = 0; i < 3; i++)
+            {
+                int demoStep = practiceSteps[i];
+                var tile = Control(page, "Visual Step " + i, labels[i], 4f + i * (width + 12f), y, width, 110f, () => StartPractice(demoStep));
+                IconAt(tile.transform, icons[i], (width - 36f) * .5f, 14f, 36f, Color.white);
+                var text = tile.GetComponentInChildren<Text>();
+                text.fontSize = 20;
+                Place(text.rectTransform, 8f, 62f, width - 16f, 36f);
+            }
+            y += 120f;
+            y += Paragraph(page, "Interactive Hint", "Click an icon to try it in practice.", 19, Theme.Muted, 4f, y, pageWidth - 8f) + 18f;
+            return y;
+        }
+
+        void StartPractice(int targetStep)
+        {
+            if (targetStep > 0 && SelectedCount == 0) selected[0] = true;
+            if (targetStep > 1 && !claim.HasValue) claim = Element.Matahari;
+            unlockedStep = Math.Max(unlockedStep, targetStep);
+            step = targetStep;
+            referenceMode = false;
+            Render();
+        }
+
+        float BuildPowerDemo(PowerType power, float y)
+        {
+            bool used = powerDemoUsed[(int)power];
+            string before;
+            string after;
+            string action;
+            Sprite source;
+            Sprite result;
+            switch (power)
+            {
+                case PowerType.MataElang:
+                    before = "Claim: 1 Sun"; after = "Revealed: 1 Leaf"; action = "Try peeking";
+                    source = SpriteFactory.Emblem(GameIcon.Cards); result = SpriteFactory.ElementEmblem(Element.Daun); break;
+                case PowerType.Tameng:
+                    before = "Unprotected play"; after = "Blocks BLUFF!"; action = "Arm & play";
+                    source = SpriteFactory.Emblem(GameIcon.Cards); result = SpriteFactory.PowerEmblem(PowerType.Tameng); break;
+                case PowerType.Bakar:
+                    before = "Hand: 5 cards"; after = "Burn 2, keep 3"; action = "Try burning 2";
+                    source = SpriteFactory.Emblem(GameIcon.Cards); result = SpriteFactory.PowerEmblem(PowerType.Bakar); break;
+                case PowerType.Badai:
+                    before = "Follow the round"; after = "Lead a new round"; action = "Try Storm";
+                    source = SpriteFactory.Emblem(GameIcon.Cards); result = SpriteFactory.Emblem(GameIcon.Restart); break;
+                case PowerType.Cermin:
+                    before = "Your bluff is caught"; after = "Challenger takes pile"; action = "Try a challenge";
+                    source = SpriteFactory.Emblem(GameIcon.Challenge); result = SpriteFactory.PowerEmblem(PowerType.Cermin); break;
+                default:
+                    before = "Hand: 5 cards"; after = "2 cards to opponent"; action = "Try giving 2";
+                    source = SpriteFactory.Emblem(GameIcon.Cards); result = SpriteFactory.PowerEmblem(PowerType.Hadiah); break;
+            }
+            var board = UIKit.CreatePanel(page, "Power Demo", Theme.PanelLight, 10f);
+            float width = pageWidth - 8f;
+            Place(board.rectTransform, 4f, y, width, 276f);
+            TextAt(board.transform, "Demo Label", "POWER DEMO", 16, Theme.Muted, 18f, 12f, width - 36f, 24f);
+            float cellWidth = (width - 64f) / 3f;
+            float[] centers = { 20f + cellWidth * .5f, width * .5f, width - 20f - cellWidth * .5f };
+            IconAt(board.transform, source, centers[0] - 23f, 56f, 46f, Color.white);
+            var activate = Control(board.transform, "Demo Activate", "", centers[1] - 40f, 42f, 80f, 80f, () =>
+            {
+                powerDemoUsed[(int)power] = true;
+                Render(true, "Demo Reset");
+            });
+            activate.interactable = !used;
+            var ring = UIKit.CreateImage(activate.transform, "Charge Ring", SpriteFactory.Ring, used ? Theme.Disabled : Theme.Gold);
+            ring.rectTransform.Stretch(2f, 2f, 2f, 2f);
+            IconAt(activate.transform, SpriteFactory.PowerEmblem(power), 12f, 12f, 56f, Color.white.WithAlpha(used ? .45f : 1f));
+            IconAt(board.transform, used ? result : SpriteFactory.Emblem(GameIcon.Clock), centers[2] - 23f, 56f, 46f, used ? Theme.Green : Theme.Muted);
+            TextAt(board.transform, "Before", before, 18, Theme.Text, centers[0] - cellWidth * .5f, 132f, cellWidth, 54f, TextAnchor.UpperCenter);
+            TextAt(board.transform, "Demo Charge", used ? "Used: 0/1" : power == PowerType.Cermin ? "Passive: 1/1" : "Ready: 1/1", 18, used ? Theme.Muted : Theme.Gold,
+                centers[1] - cellWidth * .5f, 132f, cellWidth, 54f, TextAnchor.UpperCenter);
+            TextAt(board.transform, "After", used ? after : "Click to see the effect", 18, used ? Theme.Green : Theme.Muted,
+                centers[2] - cellWidth * .5f, 132f, cellWidth, 54f, TextAnchor.UpperCenter);
+            var use = Control(board.transform, "Demo Use", action, 18f, 204f, width - 194f, 52f, () =>
+            {
+                powerDemoUsed[(int)power] = true;
+                Render(true, "Demo Reset");
+            }, true);
+            use.interactable = !used;
+            UIKit.AddButtonIcon(use, SpriteFactory.PowerEmblem(power), Color.white, 34f, 10f);
+            var reset = Control(board.transform, "Demo Reset", "Reset", width - 158f, 204f, 140f, 52f, () =>
+            {
+                powerDemoUsed[(int)power] = false;
+                Render(true, "Demo Activate");
+            });
+            UIKit.AddButtonIcon(reset, SpriteFactory.Emblem(GameIcon.Restart), Theme.Text, 26f, 12f);
+            y += 288f;
+            y += Paragraph(page, "Demo Notice", "Practice only. Powers do not recharge during a match.", 19, Theme.Muted, 4f, y, pageWidth - 8f) + 18f;
+            return y;
+        }
+
+        void CardFace(Transform parent, Element element, bool faceDown, float x, float y, float width)
+        {
+            float height = width * 1.4f;
             var rect = UIKit.CreateRect("Sample Card", parent);
-            Place(rect, x, y, CardSize.x, CardSize.y);
+            Place(rect, x, y, width, height);
             var art = rect.gameObject.AddComponent<RawImage>();
             art.texture = faceDown ? CardArt.Back : CardArt.Face(element);
             art.raycastTarget = false;
             if (!faceDown)
-                TextAt(rect, "Element", Theme.ElementName(element), 22, element.IsWild() ? Theme.Text : Theme.TextDark,
-                    8f, 173f, 144f, 34f, TextAnchor.MiddleCenter);
+                TextAt(rect, "Element", Theme.ElementName(element), 24, Theme.TextDark, 8f, height - 58f, width - 16f, 40f, TextAnchor.MiddleCenter);
         }
 
-        Text Feedback(float y, float height)
+        void PowerFace(Transform parent, PowerType power, float x, float y, float width)
         {
-            var box = UIKit.CreatePanel(page, "Feedback", Theme.PanelLight, 8f).rectTransform;
-            Place(box, 0f, y, 984f, height);
-            var text = UIKit.CreateText(box, "Explanation", "", 24, Theme.Text, TextAnchor.MiddleLeft);
-            text.rectTransform.Stretch(20f, 20f, 12f, 12f);
-            return text;
+            float height = width * 1.4f;
+            var rect = UIKit.CreatePanel(parent, "Power Card", Theme.CardFace, 8f).rectTransform;
+            Place(rect, x, y, width, height);
+            var art = UIKit.CreateImage(rect, "Icon", SpriteFactory.PowerEmblem(power), Color.white);
+            art.preserveAspect = true;
+            Place(art.rectTransform, 28f, 32f, width - 56f, width - 56f);
+            TextAt(rect, "Power Name", PowerText.Name(power), 24, Theme.TextDark, 8f, height - 58f, width - 16f, 40f, TextAnchor.MiddleCenter);
+        }
+
+        ScrollRect ScrollArea(Transform parent, string name, float left, float right, float top, float bottom)
+        {
+            var root = UIKit.CreateRect(name, parent);
+            root.Stretch(left, right, top, bottom);
+            var scroll = root.gameObject.AddComponent<ScrollRect>();
+            var viewport = UIKit.CreateImage(root, "Viewport", null, Color.clear, true).rectTransform;
+            viewport.Stretch(0f, 24f, 0f, 0f);
+            viewport.gameObject.AddComponent<RectMask2D>();
+            var content = UIKit.CreateRect("Content", viewport);
+            content.anchorMin = new Vector2(0f, 1f);
+            content.anchorMax = new Vector2(1f, 1f);
+            content.pivot = new Vector2(0f, 1f);
+            content.anchoredPosition = Vector2.zero;
+            content.sizeDelta = Vector2.zero;
+            scroll.viewport = viewport;
+            scroll.content = content;
+            scroll.horizontal = false;
+            scroll.movementType = ScrollRect.MovementType.Clamped;
+            scroll.inertia = false;
+            scroll.scrollSensitivity = 42f;
+            var track = UIKit.CreateImage(root, "Scrollbar", null, Theme.Background, true);
+            track.rectTransform.anchorMin = new Vector2(1f, 0f);
+            track.rectTransform.anchorMax = Vector2.one;
+            track.rectTransform.pivot = new Vector2(1f, 0.5f);
+            track.rectTransform.sizeDelta = new Vector2(12f, 0f);
+            track.rectTransform.anchoredPosition = Vector2.zero;
+            var handle = UIKit.CreateImage(track.transform, "Handle", null, Theme.Gold, true);
+            handle.rectTransform.Stretch();
+            var scrollbar = track.gameObject.AddComponent<Scrollbar>();
+            scrollbar.handleRect = handle.rectTransform;
+            scrollbar.targetGraphic = handle;
+            scrollbar.direction = Scrollbar.Direction.BottomToTop;
+            scrollbar.navigation = new Navigation { mode = Navigation.Mode.None };
+            scroll.verticalScrollbar = scrollbar;
+            scroll.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.AutoHide;
+            return scroll;
+        }
+
+        Button FooterButton(string name, string label, bool primary, Action action)
+        {
+            var button = Control(view, name, label, 0f, 0f, primary ? 292f : 168f, 56f, action, primary);
+            button.GetComponent<RectTransform>().Place(primary ? UIKit.BottomRight : UIKit.BottomLeft,
+                new Vector2(primary ? -186f : 124f, 42f), new Vector2(primary ? 292f : 168f, 56f));
+            UIKit.AddButtonIcon(button, primary ? label == "Done" ? SpriteFactory.Emblem(GameIcon.Check) : SpriteFactory.Emblem(GameIcon.Play) : SpriteFactory.Emblem(GameIcon.Back),
+                Color.white, 26f);
+            if (!primary) button.GetComponentInChildren<Text>().fontSize = 21;
+            return button;
         }
 
         Button Control(Transform parent, string name, string label, float x, float y, float width, float height, Action action, bool primary = false)
         {
             var button = UIKit.CreateButton(parent, name, label, new Vector2(width, height),
                 primary ? Theme.Text : Theme.PanelLight, primary ? Theme.TextDark : Theme.Text,
-                () => { if (IsOpen) action(); }, 24, 8f);
+                () => { if (IsOpen) action(); }, 24, 6f);
+            var fx = button.GetComponent<ButtonFx>();
+            if (fx != null)
+                fx.enabled = false;
             Place(button.GetComponent<RectTransform>(), x, y, width, height);
-            var outline = UIKit.CreateOutline(button.transform, "KeyboardFocus", Theme.Text, 8f);
-            outline.rectTransform.Stretch(-5f, -5f, -5f, -5f);
+            var outline = UIKit.CreateOutline(button.transform, "KeyboardFocus", Theme.Text, 5f);
+            outline.rectTransform.Stretch(-3f, -3f, -3f, -3f);
             outline.enabled = false;
-            Register(button);
+            controls.Add(button);
+            focusOutlines.Add(outline);
             return button;
         }
 
-        void Register(Button button)
+        static void Mark(Button button, bool active)
         {
-            controls.Add(button);
-            focusOutlines.Add(button.transform.Find("KeyboardFocus").GetComponent<Image>());
+            var outline = UIKit.CreateOutline(button.transform, "Selected", Theme.Gold, 5f);
+            outline.rectTransform.Stretch(-1f, -1f, -1f, -1f);
+            outline.enabled = active;
+            var focus = button.transform.Find("KeyboardFocus");
+            if (focus != null)
+                focus.SetAsLastSibling();
         }
 
-        static Text TextAt(Transform parent, string name, string content, int size, Color color,
-            float x, float y, float width, float height, TextAnchor anchor = TextAnchor.MiddleLeft)
+        static float Paragraph(Transform parent, string name, string content, int size, Color color, float x, float y, float width, bool heading = false)
+        {
+            if (string.IsNullOrEmpty(content))
+                return 0f;
+            var text = heading
+                ? UIKit.CreateHeading(parent, name, content, size, color, TextAnchor.UpperLeft)
+                : UIKit.CreateText(parent, name, content, size, color, TextAnchor.UpperLeft);
+            Place(text.rectTransform, x, y, width, size * 2f);
+            float height = Mathf.Ceil(text.preferredHeight) + 4f;
+            text.rectTransform.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, height);
+            Place(text.rectTransform, x, y, width, height);
+            return height;
+        }
+
+        static Text TextAt(Transform parent, string name, string content, int size, Color color, float x, float y, float width, float height, TextAnchor anchor = TextAnchor.MiddleLeft)
         {
             var text = UIKit.CreateText(parent, name, content, size, color, anchor);
             Place(text.rectTransform, x, y, width, height);
@@ -504,9 +866,9 @@ namespace Bluff.Game
             switch (step)
             {
                 case 0: return SelectedCount > 0;
-                case 1: return claim.HasValue;
-                case 2: return decisions[0] >= 0 && decisions[1] >= 0;
-                default: return true;
+                case 1: return SelectedCount > 0 && claim.HasValue;
+                case 2: return decisions[0] >= 0 || decisions[1] >= 0;
+                default: return maskTried;
             }
         }
 
@@ -520,30 +882,47 @@ namespace Bluff.Game
                 return;
             }
             step++;
-            RenderStep();
+            unlockedStep = Math.Max(unlockedStep, step);
+            Render();
         }
 
-        void FitPanel()
+        void Focus(Button button, bool reveal = true)
         {
-            if (panel == null)
+            if (eventSystem == null || button == null || !button.IsActive() || !button.IsInteractable())
                 return;
-            var bounds = ((RectTransform)transform).rect;
-            float scale = Mathf.Min(1f, (bounds.width - 48f) / PanelSize.x, (bounds.height - 48f) / PanelSize.y);
-            panel.localScale = Vector3.one * Mathf.Max(0.1f, scale);
+            eventSystem.SetSelectedGameObject(button.gameObject);
+            if (reveal)
+                EnsureFocusVisible(button.GetComponent<RectTransform>());
+            RefreshFocus();
         }
 
         void FocusFirst()
         {
+            Focus(controls.Find(button => button != null && button.IsActive() && button.IsInteractable()));
+        }
+
+        void RefreshFocus()
+        {
             if (eventSystem == null)
                 return;
-            foreach (var button in controls)
-            {
-                if (button != null && button.IsActive() && button.IsInteractable())
-                {
-                    eventSystem.SetSelectedGameObject(button.gameObject);
-                    return;
-                }
-            }
+            for (int i = 0; i < controls.Count; i++)
+                focusOutlines[i].enabled = controls[i].gameObject == eventSystem.currentSelectedGameObject;
+        }
+
+        void EnsureFocusVisible(RectTransform target)
+        {
+            var scroll = target.GetComponentInParent<ScrollRect>();
+            if (scroll == null || !target.IsChildOf(scroll.content))
+                return;
+            Canvas.ForceUpdateCanvases();
+            var bounds = RectTransformUtility.CalculateRelativeRectTransformBounds(scroll.viewport, target);
+            var viewport = scroll.viewport.rect;
+            float offset = bounds.max.y > viewport.yMax - 6f ? viewport.yMax - 6f - bounds.max.y
+                : bounds.min.y < viewport.yMin + 6f ? viewport.yMin + 6f - bounds.min.y : 0f;
+            var position = scroll.content.anchoredPosition;
+            position.y = Mathf.Clamp(position.y + offset, 0f, Mathf.Max(0f, scroll.content.rect.height - viewport.height));
+            scroll.content.anchoredPosition = position;
+            scroll.StopMovement();
         }
 
         void MoveFocus(int direction)
@@ -557,27 +936,78 @@ namespace Bluff.Game
                 var button = controls[index];
                 if (button != null && button.IsActive() && button.IsInteractable())
                 {
-                    eventSystem.SetSelectedGameObject(button.gameObject);
+                    Focus(button);
                     return;
                 }
             }
+        }
+
+        void MoveSpatial(Vector2 direction)
+        {
+            if (eventSystem == null || eventSystem.currentSelectedGameObject == null)
+            {
+                FocusFirst();
+                return;
+            }
+            var from = eventSystem.currentSelectedGameObject.GetComponent<RectTransform>();
+            if (from == null)
+                return;
+            Vector2 origin = from.TransformPoint(from.rect.center);
+            float best = float.PositiveInfinity;
+            Button candidate = null;
+            foreach (var button in controls)
+            {
+                if (!button.IsActive() || !button.IsInteractable() || button.gameObject == from.gameObject)
+                    continue;
+                var rect = button.GetComponent<RectTransform>();
+                Vector2 delta = (Vector2)rect.TransformPoint(rect.rect.center) - origin;
+                float along = Vector2.Dot(delta, direction);
+                if (along <= 1f)
+                    continue;
+                float across = Mathf.Abs(delta.x * direction.y - delta.y * direction.x);
+                float score = along + across * 4f;
+                if (score < best)
+                {
+                    best = score;
+                    candidate = button;
+                }
+            }
+            if (candidate != null)
+                Focus(candidate);
+        }
+
+        void ScrollKeyboard(int pageDirection, int edge)
+        {
+            var scroll = bodyScroll;
+            if (scroll == null)
+                return;
+            float range = Mathf.Max(0f, scroll.content.rect.height - scroll.viewport.rect.height);
+            var position = scroll.content.anchoredPosition;
+            position.y = edge < 0 ? 0f : edge > 0 ? range : Mathf.Clamp(position.y + pageDirection * scroll.viewport.rect.height * 0.8f, 0f, range);
+            scroll.content.anchoredPosition = position;
+            scroll.StopMovement();
         }
 
         void Update()
         {
             if (!IsOpen)
                 return;
-            FitPanel();
+            if (owner == null || !owner.gameObject.activeInHierarchy)
+            {
+                Close();
+                return;
+            }
+            if ((((RectTransform)transform).rect.size - viewSize).sqrMagnitude > 1f)
+                Render(true);
             if (!Application.isFocused)
                 return;
             if (eventSystem != null)
             {
                 eventSystem.sendNavigationEvents = false;
                 var focused = eventSystem.currentSelectedGameObject;
-                if (focused == null || !focused.transform.IsChildOf(transform))
+                if (focused == null || !focused.activeInHierarchy || !focused.transform.IsChildOf(transform))
                     FocusFirst();
-                for (int i = 0; i < controls.Count; i++)
-                    focusOutlines[i].enabled = controls[i].gameObject == eventSystem.currentSelectedGameObject;
+                RefreshFocus();
             }
             if (builtFrame == Time.frameCount)
                 return;
@@ -586,31 +1016,46 @@ namespace Bluff.Game
                 CompleteOrSkip();
                 return;
             }
-            int move = 0;
+            int tab = 0;
+            int pageDirection = 0;
+            int edge = 0;
+            Vector2 direction = Vector2.zero;
             bool submit = false;
 #if ENABLE_INPUT_SYSTEM
             var keyboard = UnityEngine.InputSystem.Keyboard.current;
             if (keyboard != null)
             {
                 if (keyboard.tabKey.wasPressedThisFrame)
-                    move = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed ? -1 : 1;
-                else if (keyboard.leftArrowKey.wasPressedThisFrame || keyboard.upArrowKey.wasPressedThisFrame)
-                    move = -1;
-                else if (keyboard.rightArrowKey.wasPressedThisFrame || keyboard.downArrowKey.wasPressedThisFrame)
-                    move = 1;
+                    tab = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed ? -1 : 1;
+                if (keyboard.leftArrowKey.wasPressedThisFrame) direction = Vector2.left;
+                else if (keyboard.rightArrowKey.wasPressedThisFrame) direction = Vector2.right;
+                else if (keyboard.upArrowKey.wasPressedThisFrame) direction = Vector2.up;
+                else if (keyboard.downArrowKey.wasPressedThisFrame) direction = Vector2.down;
+                if (keyboard.pageDownKey.wasPressedThisFrame) pageDirection = 1;
+                else if (keyboard.pageUpKey.wasPressedThisFrame) pageDirection = -1;
+                if (keyboard.homeKey.wasPressedThisFrame) edge = -1;
+                else if (keyboard.endKey.wasPressedThisFrame) edge = 1;
                 submit = keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame || keyboard.spaceKey.wasPressedThisFrame;
             }
 #elif ENABLE_LEGACY_INPUT_MANAGER
             if (Input.GetKeyDown(KeyCode.Tab))
-                move = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift) ? -1 : 1;
-            else if (Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.UpArrow))
-                move = -1;
-            else if (Input.GetKeyDown(KeyCode.RightArrow) || Input.GetKeyDown(KeyCode.DownArrow))
-                move = 1;
+                tab = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift) ? -1 : 1;
+            if (Input.GetKeyDown(KeyCode.LeftArrow)) direction = Vector2.left;
+            else if (Input.GetKeyDown(KeyCode.RightArrow)) direction = Vector2.right;
+            else if (Input.GetKeyDown(KeyCode.UpArrow)) direction = Vector2.up;
+            else if (Input.GetKeyDown(KeyCode.DownArrow)) direction = Vector2.down;
+            if (Input.GetKeyDown(KeyCode.PageDown)) pageDirection = 1;
+            else if (Input.GetKeyDown(KeyCode.PageUp)) pageDirection = -1;
+            if (Input.GetKeyDown(KeyCode.Home)) edge = -1;
+            else if (Input.GetKeyDown(KeyCode.End)) edge = 1;
             submit = Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter) || Input.GetKeyDown(KeyCode.Space);
 #endif
-            if (move != 0)
-                MoveFocus(move);
+            if (tab != 0)
+                MoveFocus(tab);
+            else if (direction != Vector2.zero)
+                MoveSpatial(direction);
+            else if (pageDirection != 0 || edge != 0)
+                ScrollKeyboard(pageDirection, edge);
             else if (submit && eventSystem != null)
             {
                 var button = controls.Find(value => value != null && value.gameObject == eventSystem.currentSelectedGameObject);

@@ -9,7 +9,7 @@ namespace Bluff.Game
     /// tidak butuh file gambar sama sekali. Sprite di-cache dan dibuat sekali saja.
     /// Koordinat bentuk: p dalam [-0.5, 0.5], sumbu y ke atas.
     /// </summary>
-    public static class SpriteFactory
+    public static partial class SpriteFactory
     {
         /// <summary>Radius sudut (pixel tekstur) dari sprite rounded-rect 9-slice.</summary>
         public const float RoundedRectRadius = 40f;
@@ -28,6 +28,18 @@ namespace Bluff.Game
         public static Sprite Crosshair => Get("crosshair", () => BuildShape(192, CrosshairSdf, true));
         public static Sprite Pause => Get("pause", () => BuildShape(96, PauseSdf, true));
         public static Sprite Back => Get("back-arrow", () => BuildShape(96, BackArrowSdf, true));
+        public static Sprite Guide => Get("guide", () => BuildShape(128, GuideSdf, true));
+        public static Sprite Cards => Get("cards", () => BuildShape(128, CardsSdf, true));
+        public static Sprite Check => Get("check", () => BuildShape(128, p => Mathf.Min(
+            SdSegment(p, new Vector2(-.32f, 0f), new Vector2(-.08f, -.24f)),
+            SdSegment(p, new Vector2(-.08f, -.24f), new Vector2(.34f, .28f))) - .045f, true));
+        public static Sprite Close => Get("close", () => BuildShape(128, p => Mathf.Min(
+            SdSegment(p, new Vector2(-.27f, -.27f), new Vector2(.27f, .27f)),
+            SdSegment(p, new Vector2(-.27f, .27f), new Vector2(.27f, -.27f))) - .04f, true));
+        public static Sprite Play => Get("play", () => BuildShape(128, p => SdPolygon(p, PlayPoly) - .018f, true));
+        public static Sprite Clock => Get("clock", () => BuildShape(128, ClockSdf, true));
+        public static Sprite Restart => Get("restart", () => BuildShape(128, RestartSdf, true));
+        public static Sprite Home => Get("home", () => BuildShape(128, HomeSdf, true));
 
         public static Sprite ElementIcon(Element element) => Get("element-" + (int)element, () => BuildShape(256, p => ElementSdf(element, p), true));
 
@@ -414,6 +426,51 @@ namespace Bluff.Game
             float upper = SdSegment(p, new Vector2(-0.28f, 0f), new Vector2(-0.05f, 0.23f)) - 0.05f;
             float lower = SdSegment(p, new Vector2(-0.28f, 0f), new Vector2(-0.05f, -0.23f)) - 0.05f;
             return Mathf.Min(shaft, Mathf.Min(upper, lower));
+        }
+
+        static readonly Vector2[] PlayPoly = { new Vector2(-.22f, .32f), new Vector2(.34f, 0f), new Vector2(-.22f, -.32f) };
+
+        static float GuideSdf(Vector2 p)
+        {
+            float d = Mathf.Abs(RoundedBox(p - new Vector2(-.19f, 0f), new Vector2(.13f, .28f), .035f)) - .025f;
+            d = Mathf.Min(d, Mathf.Abs(RoundedBox(p - new Vector2(.19f, 0f), new Vector2(.13f, .28f), .035f)) - .025f);
+            for (int i = 0; i < 3; i++)
+                for (int side = -1; side <= 1; side += 2)
+                    d = Mathf.Min(d, SdSegment(p, new Vector2(side * .11f, .14f - i * .13f), new Vector2(side * .27f, .14f - i * .13f)) - .018f);
+            return d;
+        }
+
+        static float CardsSdf(Vector2 p)
+        {
+            float rear = Mathf.Abs(RoundedBox(Rotate(p - new Vector2(-.12f, .03f), .18f), new Vector2(.18f, .27f), .03f)) - .024f;
+            var q = p - new Vector2(.12f, -.04f);
+            float front = RoundedBox(q, new Vector2(.18f, .27f), .03f);
+            return Mathf.Min(Mathf.Max(rear, .045f - front), Mathf.Min(Mathf.Abs(front) - .024f, q.magnitude - .065f));
+        }
+
+        static float ClockSdf(Vector2 p)
+        {
+            float rim = Mathf.Abs(p.magnitude - .35f) - .027f;
+            float hands = Mathf.Min(SdSegment(p, Vector2.zero, new Vector2(0f, .23f)),
+                SdSegment(p, Vector2.zero, new Vector2(.18f, -.1f))) - .027f;
+            return Mathf.Min(rim, hands);
+        }
+
+        static float RestartSdf(Vector2 p)
+        {
+            float arc = Mathf.Max(Mathf.Abs(p.magnitude - .29f) - .03f, Mathf.Min(p.x - .08f, p.y - .08f));
+            float head = Mathf.Min(SdSegment(p, new Vector2(.29f, .04f), new Vector2(.12f, .08f)),
+                SdSegment(p, new Vector2(.29f, .04f), new Vector2(.35f, .21f))) - .033f;
+            return Mathf.Min(arc, head);
+        }
+
+        static float HomeSdf(Vector2 p)
+        {
+            float roof = Mathf.Min(SdSegment(p, new Vector2(-.38f, .03f), new Vector2(0f, .35f)),
+                SdSegment(p, new Vector2(0f, .35f), new Vector2(.38f, .03f))) - .03f;
+            float body = Mathf.Max(Mathf.Abs(SdBox(p - new Vector2(0f, -.13f), new Vector2(.25f, .2f))) - .027f, p.y - .06f);
+            float door = Mathf.Abs(SdBox(p - new Vector2(0f, -.23f), new Vector2(.07f, .1f))) - .02f;
+            return Mathf.Min(roof, Mathf.Min(body, door));
         }
 
         // ------------------------------------------------------------------ sdf helpers

@@ -18,18 +18,24 @@ namespace Bluff.Game
         static Font semiboldItalic;
         static Font display;
 
-        public static Font Font => font != null ? font : (font = Resources.Load<Font>("Fonts/Barlow-Regular") ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"));
+        // Plus Jakarta Sans keeps small Indonesian labels open and readable on the HUD.
+        public static Font Font => font != null ? font : (font = Resources.Load<Font>("Fonts/PlusJakartaSans-Regular")
+            ?? Resources.Load<Font>("Fonts/Barlow-Regular")
+            ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"));
 
         static Font TextFont(FontStyle style)
         {
             switch (style)
             {
                 case FontStyle.Bold:
-                    return semibold != null ? semibold : (semibold = Resources.Load<Font>("Fonts/Barlow-SemiBold") ?? Font);
+                    return semibold != null ? semibold : (semibold = Resources.Load<Font>("Fonts/PlusJakartaSans-SemiBold")
+                        ?? Resources.Load<Font>("Fonts/Barlow-SemiBold") ?? Font);
                 case FontStyle.Italic:
-                    return italic != null ? italic : (italic = Resources.Load<Font>("Fonts/Barlow-Italic") ?? Font);
+                    return italic != null ? italic : (italic = Resources.Load<Font>("Fonts/PlusJakartaSans-Italic")
+                        ?? Resources.Load<Font>("Fonts/Barlow-Italic") ?? Font);
                 case FontStyle.BoldAndItalic:
-                    return semiboldItalic != null ? semiboldItalic : (semiboldItalic = Resources.Load<Font>("Fonts/Barlow-SemiBoldItalic") ?? Font);
+                    return semiboldItalic != null ? semiboldItalic : (semiboldItalic = Resources.Load<Font>("Fonts/PlusJakartaSans-SemiBoldItalic")
+                        ?? Resources.Load<Font>("Fonts/Barlow-SemiBoldItalic") ?? Font);
                 default:
                     return Font;
             }
@@ -238,7 +244,7 @@ namespace Bluff.Game
             img.rectTransform.sizeDelta = size;
             var button = img.gameObject.AddComponent<Button>();
             button.targetGraphic = img;
-            button.navigation = new Navigation { mode = Navigation.Mode.None };
+            button.navigation = new Navigation { mode = Navigation.Mode.Automatic };
             var colors = button.colors;
             colors.normalColor = new Color(0.92f, 0.92f, 0.92f, 1f);
             colors.highlightedColor = Color.white;
@@ -271,6 +277,31 @@ namespace Bluff.Game
             var img = CreateImage(button.transform, "Icon", icon, iconColor);
             img.preserveAspect = true;
             img.rectTransform.Stretch(size.x * 0.22f, size.x * 0.22f, size.y * 0.22f, size.y * 0.22f);
+            return button;
+        }
+
+        public static Image AddButtonIcon(Button button, Sprite sprite, Color color, float size = 30f, float inset = 16f)
+        {
+            var icon = CreateImage(button.transform, "Icon", sprite, color);
+            icon.preserveAspect = true;
+            icon.rectTransform.Place(Left, new Vector2(inset + size * .5f, 0f), new Vector2(size, size));
+            var label = button.transform.Find("Label")?.GetComponent<Text>();
+            if (label != null)
+            {
+                label.alignment = TextAnchor.MiddleLeft;
+                label.rectTransform.Stretch(inset + size + 12f, 12f, 4f, 4f);
+            }
+            return icon;
+        }
+
+        // Keep a visible name below compact icons so their meaning is also clear on touch screens.
+        public static Button CreateLabeledIconButton(Transform parent, string name, string label, Sprite sprite, System.Action action)
+        {
+            var button = CreateButton(parent, name, label, new Vector2(88f, 84f), Theme.Panel, Theme.Text, action, 19, 8f);
+            var icon = CreateImage(button.transform, "Icon", sprite, Color.white);
+            icon.preserveAspect = true;
+            icon.rectTransform.Place(Top, new Vector2(0f, -27f), new Vector2(40f, 40f));
+            button.GetComponentInChildren<Text>().rectTransform.Place(Bottom, new Vector2(0f, 20f), new Vector2(84f, 28f));
             return button;
         }
 
@@ -369,12 +400,12 @@ namespace Bluff.Game
             var modal = new Modal { Root = dim.gameObject, Panel = panel.rectTransform, Title = titleText };
             if (onClose != null)
             {
-                var close = CreateButton(panel.transform, "Close", "X", new Vector2(64f, 64f), Theme.PanelLight, Theme.Text, () =>
+                var close = CreateLabeledIconButton(panel.transform, "Close", "Close", SpriteFactory.Emblem(GameIcon.Close), () =>
                 {
                     modal.Close();
                     onClose();
-                }, 30, 32f);
-                close.GetComponent<RectTransform>().Place(TopRight, new Vector2(-50f, -50f), new Vector2(64f, 64f));
+                });
+                close.GetComponent<RectTransform>().Place(TopRight, new Vector2(-54f, -52f), new Vector2(88f, 84f));
             }
 
             var content = CreateRect("Content", panel.transform);

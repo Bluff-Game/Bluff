@@ -66,8 +66,8 @@ namespace Bluff.Game
         /// <summary>Teks rich-text berwarna untuk komponen Text legacy.</summary>
         public static string Colored(string text, Color color) => "<color=#" + ColorUtility.ToHtmlStringRGB(color) + ">" + text + "</color>";
 
-        public static string ElementName(Element element) => element.ToString();
+        public static string ElementName(Element element) => Elements.Name(element);
 
-        public static string ColoredElement(Element element) => ElementName(element);
+        public static string ColoredElement(Element element) => Colored(ElementName(element), ElementColor(element));
     }
 }

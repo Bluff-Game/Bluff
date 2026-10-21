@@ -14,11 +14,13 @@ namespace Bluff.Game
         public bool Connected;
         public bool Ready;
         public bool IsBot;
+        public int Outfit;
+        public int[] Effects = new int[7];
     }
 
     internal enum RoomMessage : byte
     {
-        Lobby, Start, Bootstrap, Batch, Open, Intent, Ready, SceneReady, Presented, Rejected, End, ReturnRoom
+        Lobby, Start, Bootstrap, Batch, Open, Intent, Ready, SceneReady, Presented, Rejected, End, ReturnRoom, Emote
     }
 
     internal enum RoomAction : byte
@@ -42,6 +44,7 @@ namespace Bluff.Game
         public Element Claim;
         public PowerType Power;
         public int Target = -1;
+        public int Emote;
         public List<int> Cards = new List<int>();
     }
 
@@ -68,7 +71,7 @@ namespace Bluff.Game
     internal static class RoomProtocol
     {
         public const int MaxPayload = 65536;
-        public const int Version = 1;
+        public const int Version = 4;
         const int Magic = 0x424C5546;
         const int MaxCards = 52;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
@@ -86,7 +89,7 @@ namespace Bluff.Game
                     break;
             }
             string name = result.ToString().Trim();
-            return name.Length == 0 ? "Pemain" : name;
+            return name.Length == 0 ? "Player" : name;
         }
 
         public static RoomPacket Batch(GameEngine engine, IEnumerable<GameEvent> events, int viewer, int revision)
@@ -108,17 +111,27 @@ namespace Bluff.Game
                 w.Write(p.Revision);
                 switch (p.Type)
                 {
+                    case RoomMessage.Emote:
+                        Require(p.Seat >= 0 && p.Seat < 4 && p.Target >= 0 && p.Target < 4 && p.Target != p.Seat && p.Emote >= 0 && p.Emote < 2);
+                        w.Write((byte)p.Seat); w.Write((byte)p.Target); w.Write((byte)p.Emote); break;
                     case RoomMessage.Lobby:
                         w.Write(p.Seat);
                         Text(w, p.Text, 16);
                         Require(p.Seats != null && p.Seats.Length == 4);
                         foreach (var seat in p.Seats)
                         {
+                            Require(seat != null && Cosmetics.ValidOutfitCode(seat.Outfit) && seat.Effects != null && seat.Effects.Length == 7);
                             w.Write(seat.SeatId);
                             Text(w, CleanName(seat.Name), 96);
                             w.Write(seat.Connected);
                             w.Write(seat.Ready);
                             w.Write(seat.IsBot);
+                            w.Write((ushort)seat.Outfit);
+                            for (int i = 1; i <= 6; i++)
+                            {
+                                Require(Cosmetics.ValidEffect(seat.Effects[i]));
+                                w.Write((byte)seat.Effects[i]);
+                            }
                         }
                         break;
                     case RoomMessage.Bootstrap:
@@ -167,9 +180,11 @@ namespace Bluff.Game
                 using (var r = new BinaryReader(stream, Utf8))
                 {
                     Require(r.ReadInt32() == Magic && r.ReadByte() == Version);
-                    var p = new RoomPacket { Type = (RoomMessage)Number(r.ReadByte(), 0, (int)RoomMessage.ReturnRoom), Revision = Number(r.ReadInt32(), 0, int.MaxValue) };
+                    var p = new RoomPacket { Type = (RoomMessage)Number(r.ReadByte(), 0, (int)RoomMessage.Emote), Revision = Number(r.ReadInt32(), 0, int.MaxValue) };
                     switch (p.Type)
                     {
+                        case RoomMessage.Emote:
+                            p.Seat=Number(r.ReadByte(),0,3); p.Target=Number(r.ReadByte(),0,3); p.Emote=Number(r.ReadByte(),0,1); Require(p.Seat!=p.Target); break;
                         case RoomMessage.Lobby:
                             p.Seat = Number(r.ReadInt32(), 0, 3);
                             p.Text = Text(r, 16);
@@ -178,6 +193,10 @@ namespace Bluff.Game
                             {
                                 Require(r.ReadInt32() == i);
                                 p.Seats[i] = new RoomSeat { SeatId = i, Name = CleanName(Text(r, 96)), Connected = Bool(r), Ready = Bool(r), IsBot = Bool(r) };
+                                p.Seats[i].Outfit = r.ReadUInt16();
+                                Require(Cosmetics.ValidOutfitCode(p.Seats[i].Outfit));
+                                for (int effect = 1; effect <= 6; effect++)
+                                    p.Seats[i].Effects[effect] = Number(r.ReadByte(), 0, Cosmetics.EffectNames.Length - 1);
                             }
                             break;
                         case RoomMessage.Bootstrap:

@@ -18,7 +18,7 @@ namespace Bluff.Game
 {
     public sealed class InternetRoom : MonoBehaviour
     {
-        const string Channel = "bluff.room.v1";
+        const string Channel = "bluff.room.v4";
         const double ReadyTimeout = 45;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
         readonly List<RoomSeat> seats = new List<RoomSeat>();
@@ -54,6 +54,7 @@ namespace Bluff.Game
             public double BudgetAt;
             public int Budget;
             public IntentGate Gate = new IntentGate();
+            public double EmoteReady;
         }
 
         struct Inbound
@@ -80,6 +81,7 @@ namespace Bluff.Game
         public int LocalSeat { get; private set; } = -1;
         public IReadOnlyList<RoomSeat> Seats => seats.AsReadOnly();
         public event Action Changed;
+        public event Action<int,int,int> EmoteReceived;
         internal GameEngine HostEngine => match?.Engine;
         internal MatchStats HostStats => match?.Stats;
         internal bool InputOpen => inputOpen;
@@ -113,22 +115,22 @@ namespace Bluff.Game
             Error = "";
             if (!Guid.TryParse(Application.cloudProjectId, out var projectId) || projectId == Guid.Empty)
             {
-                SetError("ROOM INTERNET belum dikonfigurasi. Pemilik proyek perlu menautkan Unity Project ID di Project Settings > Services, lalu mengaktifkan Authentication anonim dan Relay di Unity Dashboard.");
+                SetError("Online rooms are not configured. Link a Unity Project ID in Project Settings > Services, then enable anonymous Authentication and Relay in Unity Dashboard.");
                 return;
             }
             code = (code ?? "").Trim().ToUpperInvariant();
             if (!host && !ValidCode(code))
             {
-                SetError("Kode room tidak valid. Masukkan kode Relay dari host.");
+                SetError("Invalid room code. Enter the host's Relay code.");
                 return;
             }
             if (serviceTask != null && !serviceTask.IsCompleted)
             {
-                SetError("Permintaan layanan sebelumnya masih dibatalkan. Tunggu sebentar lalu coba lagi.");
+                SetError("The previous request is still being cancelled. Try again shortly.");
                 return;
             }
             IsBusy = true;
-            Status = host ? "Membuat room…" : "Menghubungkan ke room…";
+            Status = host ? "Creating room..." : "Connecting to room...";
             cancellation?.Dispose();
             cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(35));
             var token = cancellation.Token;
@@ -183,18 +185,18 @@ namespace Bluff.Game
                     }
                 }
                 token.ThrowIfCancellationRequested();
-                Status = "Menunggu pemain siap.";
+                Status = "Waiting for players to get ready.";
             }
             catch (OperationCanceledException)
             {
-                if (!stopping) SetError("Koneksi dibatalkan atau melewati batas waktu. Periksa internet dan coba lagi.");
+                if (!stopping) SetError("Connection cancelled or timed out. Check your internet and try again.");
                 CleanupNetwork();
                 await ReleaseAuthentication();
             }
             catch (Exception)
             {
                 if (!stopping && string.IsNullOrEmpty(Error))
-                    SetError("Tidak dapat terhubung ke Relay. Periksa internet, kode room, serta konfigurasi Authentication anonim dan Relay proyek Unity.");
+                    SetError("Could not connect to Relay. Check your connection, room code, and Unity Authentication and Relay setup.");
                 CleanupNetwork();
                 await ReleaseAuthentication();
             }
@@ -241,7 +243,7 @@ namespace Bluff.Game
                 ConnectionApproval = true,
                 ForceSamePrefabs = false,
                 ProtocolVersion = RoomProtocol.Version,
-                ConnectionData = Utf8.GetBytes(RoomProtocol.Version + ":" + name),
+                ConnectionData = ConnectionProfile(name),
                 ClientConnectionBufferTimeout = 15
             };
             network.ConnectionApprovalCallback += Approve;
@@ -257,6 +259,16 @@ namespace Bluff.Game
             seats.Clear();
             for (int i = 0; i < 4; i++)
                 seats.Add(new RoomSeat { SeatId = i, Name = i == 0 ? RoomProtocol.CleanName(name) : "Bot " + i, Connected = i == 0, Ready = i == 0, IsBot = i != 0 });
+            seats[0].Outfit = Cosmetics.OutfitCode;
+            foreach (var power in Powers.All) seats[0].Effects[(int)power] = Cosmetics.Effect(power);
+        }
+
+        static byte[] ConnectionProfile(string name)
+        {
+            var profile = new StringBuilder(RoomProtocol.Version + ":" + Cosmetics.OutfitCode + ":");
+            foreach (var power in Powers.All) profile.Append(Cosmetics.Effect(power));
+            profile.Append(':').Append(RoomProtocol.CleanName(name));
+            return Utf8.GetBytes(profile.ToString());
         }
 
         void Approve(NetworkManager.ConnectionApprovalRequest request, NetworkManager.ConnectionApprovalResponse response)
@@ -269,14 +281,22 @@ namespace Bluff.Game
                 return;
             }
             response.Approved = false;
-            response.Reason = "Room penuh, sudah dimulai, atau versi game berbeda.";
-            if (InMatch || stopping || peers.Count >= 4 || request.Payload == null || request.Payload.Length > 100)
+            response.Reason = "Room full, match started, or game version mismatch.";
+            if (InMatch || stopping || peers.Count >= 4 || request.Payload == null || request.Payload.Length > 128)
                 return;
             string text;
             try { text = Utf8.GetString(request.Payload); }
             catch (ArgumentException) { return; }
             string prefix = RoomProtocol.Version + ":";
             if (!text.StartsWith(prefix, StringComparison.Ordinal)) return;
+            var fields = text.Split(new[] { ':' }, 4);
+            if (fields.Length != 4 || !int.TryParse(fields[1], out int costume) || !Cosmetics.ValidOutfitCode(costume) || fields[2].Length != 6) return;
+            var effects = new int[7];
+            for (int i = 1; i <= 6; i++)
+            {
+                effects[i] = fields[2][i - 1] - '0';
+                if (!Cosmetics.ValidEffect(effects[i])) return;
+            }
             int seat = -1;
             for (int i = 1; i < 4; i++)
             {
@@ -286,7 +306,7 @@ namespace Bluff.Game
             }
             if (seat < 0) return;
             peers[request.ClientNetworkId] = new Peer { Seat = seat };
-            seats[seat] = new RoomSeat { SeatId = seat, Name = RoomProtocol.CleanName(text.Substring(prefix.Length)), IsBot = false };
+            seats[seat] = new RoomSeat { SeatId = seat, Name = RoomProtocol.CleanName(fields[3]), IsBot = false, Outfit = costume, Effects = effects };
             response.Approved = true;
         }
 
@@ -309,7 +329,7 @@ namespace Bluff.Game
                 peers.Remove(id);
                 if (InMatch)
                 {
-                    Abort("Pemain terputus. Pertandingan dihentikan; buat room baru untuk bermain lagi.");
+                    Abort("A player disconnected. Match ended; create a new room to play again.");
                     return;
                 }
                 seats[peer.Seat] = new RoomSeat { SeatId = peer.Seat, Name = "Bot " + peer.Seat, IsBot = true };
@@ -317,11 +337,11 @@ namespace Bluff.Game
             }
             else
             {
-                Abort("Koneksi ke host terputus atau room tidak tersedia. Gabung kembali dengan kode room yang aktif.");
+                Abort("Host disconnected or room unavailable. Rejoin using an active room code.");
             }
         }
 
-        void TransportFailed() => Abort("Koneksi Relay gagal. Periksa internet lalu buat atau gabung room lagi.");
+        void TransportFailed() => Abort("Relay connection failed. Check your connection and rejoin.");
 
         void Receive(ulong sender, FastBufferReader reader)
         {
@@ -353,7 +373,7 @@ namespace Bluff.Game
             if (IsHost && sender != NetworkManager.ServerClientId)
                 network.DisconnectClient(sender);
             else
-                Abort("Data room tidak valid. Pastikan semua pemain memakai versi game yang sama.");
+                Abort("Invalid room data. All players must use the same game version.");
         }
 
         void Update()
@@ -374,9 +394,9 @@ namespace Bluff.Game
                 return;
             }
             if (IsHost && !AllSceneReady && Time.realtimeSinceStartupAsDouble > sceneDeadline)
-                Abort("Pemain tidak selesai memuat meja dalam 45 detik. Coba buat room lagi.");
+                Abort("A player did not load within 45 seconds. Create a new room.");
             else if (IsHost && barrierDeadline > 0 && !AllPresented && Time.realtimeSinceStartupAsDouble > barrierDeadline)
-                Abort("Pemain tidak merespons presentasi meja dalam 45 detik. Pertandingan dihentikan.");
+                Abort("A player did not respond within 45 seconds. Match ended.");
         }
 
         void ProcessHost(ulong sender, RoomPacket p)
@@ -384,6 +404,11 @@ namespace Bluff.Game
             if (!peers.TryGetValue(sender, out var peer)) return;
             switch (p.Type)
             {
+                case RoomMessage.Emote:
+                    if (!InMatch || p.Target < 0 || p.Target >= seats.Count || p.Target == peer.Seat || Time.realtimeSinceStartupAsDouble < peer.EmoteReady) return;
+                    peer.EmoteReady=Time.realtimeSinceStartupAsDouble+4;
+                    p.Seat=peer.Seat;
+                    Broadcast(p); EmoteReceived?.Invoke(p.Seat,p.Target,p.Emote); break;
                 case RoomMessage.Ready:
                     if (!InMatch) { seats[peer.Seat].Ready = p.Flag; BroadcastLobby(); }
                     break;
@@ -400,7 +425,7 @@ namespace Bluff.Game
                 case RoomMessage.Intent:
                     if (!InMatch || !inputOpen || !peer.Gate.Accept(p.Sequence, p.Revision, revision, Time.realtimeSinceStartupAsDouble))
                     {
-                        Reject(peer.Seat, "Aksi sudah kedaluwarsa atau belum waktunya. Coba lagi saat giliran aktif.");
+                        Reject(peer.Seat, "Action expired or unavailable. Try again on your turn.");
                         break;
                     }
                     p.Seat = peer.Seat;
@@ -416,6 +441,8 @@ namespace Bluff.Game
         {
             switch (p.Type)
             {
+                case RoomMessage.Emote:
+                    if (InMatch) EmoteReceived?.Invoke(p.Seat,p.Target,p.Emote); break;
                 case RoomMessage.Lobby:
                     if (InMatch) return;
                     seats.Clear();
@@ -432,12 +459,12 @@ namespace Bluff.Game
                 case RoomMessage.Bootstrap:
                 case RoomMessage.Batch:
                     if (!InMatch || p.Snapshot.ViewerId != LocalSeat || p.Revision != receivedRevision + 1)
-                    { Abort("Urutan data room tidak sesuai. Pertandingan dihentikan."); return; }
+                    { Abort("Room data is out of order. Match ended."); return; }
                     if ((p.Type == RoomMessage.Bootstrap) != !bootstrapped || (!bootstrapped && (p.Snapshot.Phase != GamePhase.NotStarted || p.Events.Count != 0)))
-                    { Abort("Data awal room tidak valid."); return; }
+                    { Abort("Invalid initial room data."); return; }
                     foreach (var e in p.Events)
                     {
-                        if (e.Sequence != lastEvent + 1) { Abort("Urutan event room tidak sesuai."); return; }
+                        if (e.Sequence != lastEvent + 1) { Abort("Room events are out of order."); return; }
                         lastEvent = e.Sequence;
                     }
                     bootstrapped = true;
@@ -459,10 +486,10 @@ namespace Bluff.Game
                     if (InMatch) ResetToRoom();
                     break;
                 case RoomMessage.End:
-                    Abort(string.IsNullOrEmpty(p.Text) ? "Host menutup room." : p.Text);
+                    Abort(string.IsNullOrEmpty(p.Text) ? "The host closed the room." : p.Text);
                     break;
                 default:
-                    Abort("Pesan host tidak valid.");
+                    Abort("Invalid host message.");
                     break;
             }
         }
@@ -473,12 +500,18 @@ namespace Bluff.Game
             SendHost(new RoomPacket { Type = RoomMessage.Ready, Flag = ready });
         }
 
+        public void SendEmote(int value,int target)
+        {
+            if (!InMatch || value < 0 || value > 1 || target < 0 || target >= seats.Count || target == LocalSeat) return;
+            SendHost(new RoomPacket { Type=RoomMessage.Emote, Seat=LocalSeat, Target=target, Emote=value });
+        }
+
         public void StartMatch()
         {
             if (!IsHost || !IsConnected || IsBusy || InMatch) return;
             foreach (var seat in seats)
                 if (!seat.IsBot && (!seat.Connected || !seat.Ready))
-                { SetError("Semua pemain harus siap sebelum host memulai."); return; }
+                { SetError("All players must be ready before starting."); return; }
             Error = "";
             Broadcast(new RoomPacket { Type = RoomMessage.Start, Revision = revision });
             BeginMatch();
@@ -499,7 +532,7 @@ namespace Bluff.Game
             intents.Clear();
             foreach (var peer in peers.Values) { peer.SceneReady = false; peer.Presented = 0; }
             sceneDeadline = Time.realtimeSinceStartupAsDouble + ReadyTimeout;
-            Status = "Memuat meja…";
+            Status = "Loading table...";
             Changed?.Invoke();
             SceneFlow.GoToGame();
         }
@@ -525,7 +558,7 @@ namespace Bluff.Game
                 peer.SceneReady = false;
                 peer.Presented = 0;
             }
-            Status = "Siapkan pemain untuk pertandingan berikutnya.";
+            Status = "Get ready for the next match.";
             Changed?.Invoke();
             SceneFlow.GoToMenu();
         }
@@ -540,7 +573,7 @@ namespace Bluff.Game
         internal void DetachScene()
         {
             if (InMatch && !stopping && !quitting)
-                Abort("Meja ditutup. Pertandingan dihentikan untuk semua pemain.");
+                Abort("Table closed. The match ended for everyone.");
             sceneAttached = false;
         }
 
@@ -601,7 +634,7 @@ namespace Bluff.Game
             inputOpen = true;
             var p = new RoomPacket { Type = RoomMessage.Open, Revision = revision, Seconds = seconds, Flag = true };
             foreach (var pair in peers) Deliver(pair.Key, p);
-            Status = "Pertandingan berlangsung.";
+            Status = "Match in progress.";
         }
 
         internal bool TakeIntent(out RoomPacket packet)
@@ -676,7 +709,7 @@ namespace Bluff.Game
             cancellation?.Cancel();
             inputOpen = false;
             if (IsHost)
-                Broadcast(new RoomPacket { Type = RoomMessage.End, Text = failed ? Error : "Host meninggalkan room. Pertandingan dihentikan." });
+                Broadcast(new RoomPacket { Type = RoomMessage.End, Text = failed ? Error : "The host left. Match ended." });
             InMatch = false;
             StopAllCoroutines();
             await Task.Yield();
@@ -702,7 +735,7 @@ namespace Bluff.Game
                 var menu = UnityEngine.Object.FindFirstObjectByType<MainMenuController>();
                 var canvas = menu != null ? menu.GetComponentInChildren<Canvas>() : null;
                 if (canvas == null) continue;
-                var modal = UIKit.CreateModal(canvas.transform, "Room terputus", new Vector2(900f, 430f), () => { });
+                var modal = UIKit.CreateModal(canvas.transform, "Room disconnected", new Vector2(900f, 430f), () => { });
                 UIKit.CreateScrollText(modal.Content, reason, 26);
                 yield break;
             }

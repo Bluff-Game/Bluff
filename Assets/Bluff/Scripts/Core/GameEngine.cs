@@ -37,7 +37,7 @@ namespace Bluff.Core
                 throw new ArgumentNullException(nameof(config));
             config.Validate();
             if (names == null || names.Count != config.PlayerCount)
-                throw new ArgumentException("Jumlah nama harus sama dengan PlayerCount.", nameof(names));
+                throw new ArgumentException("Name count must match PlayerCount.", nameof(names));
 
             this.config = config.Clone();
             for (int i = 0; i < names.Count; i++)
@@ -86,7 +86,7 @@ namespace Bluff.Core
         public void StartWithDeck(IList<Card> deck, int firstPlayer, IList<PowerType> powers = null)
         {
             if (Phase != GamePhase.NotStarted)
-                throw new InvalidOperationException("Permainan sudah dimulai.");
+                throw new InvalidOperationException("The match has already started.");
             if (firstPlayer < 0 || firstPlayer >= players.Count)
                 throw new ArgumentOutOfRangeException(nameof(firstPlayer));
 
@@ -133,17 +133,17 @@ namespace Bluff.Core
         public ActionResult TryPlay(int playerId, IList<int> cardIds, Element claim, bool useShield)
         {
             if (Phase != GamePhase.AwaitingPlay)
-                return ActionResult.Fail("Belum saatnya menaruh kartu.");
+                return ActionResult.Fail("You cannot play cards yet.");
             if (playerId != CurrentPlayer)
-                return ActionResult.Fail("Bukan giliranmu.");
+                return ActionResult.Fail("It is not your turn.");
             if (cardIds == null || cardIds.Count < 1)
-                return ActionResult.Fail("Pilih minimal 1 kartu.");
+                return ActionResult.Fail("Select at least 1 card.");
             if (cardIds.Count > config.MaxCardsPerPlay)
-                return ActionResult.Fail("Maksimal " + config.MaxCardsPerPlay + " kartu per giliran.");
+                return ActionResult.Fail("Maximum " + config.MaxCardsPerPlay + " cards per turn.");
             if (!claim.IsClaimable())
-                return ActionResult.Fail("Klaim harus salah satu dari 6 elemen.");
+                return ActionResult.Fail("Claim one of the 6 elements.");
             if (HasRoundElement && claim != RoundElement)
-                return ActionResult.Fail("Ronde ini wajib klaim " + RoundElement + ".");
+                return ActionResult.Fail("This round requires " + Elements.Name(RoundElement) + ".");
 
             var player = players[playerId];
             var result = CollectCards(player, cardIds, out var chosen);
@@ -152,9 +152,9 @@ namespace Bluff.Core
             if (useShield)
             {
                 if (player.Power != PowerType.Tameng || player.PowerUsed)
-                    return ActionResult.Fail("Kamu tidak punya Tameng yang bisa dipakai.");
+                    return ActionResult.Fail("You have no available Shield.");
                 if (player.HandCount - chosen.Count < 1)
-                    return ActionResult.Fail("Tameng tidak bisa dipakai untuk taruhan terakhir.");
+                    return ActionResult.Fail("Shield cannot protect your final play.");
             }
 
             foreach (var card in chosen)
@@ -198,11 +198,11 @@ namespace Bluff.Core
         public ActionResult TryPass(int playerId)
         {
             if (Phase != GamePhase.AwaitingPlay)
-                return ActionResult.Fail("Belum saatnya memilih Pass.");
+                return ActionResult.Fail("You cannot pass yet.");
             if (playerId != CurrentPlayer)
-                return ActionResult.Fail("Bukan giliranmu.");
+                return ActionResult.Fail("It is not your turn.");
             if (!HasRoundElement)
-                return ActionResult.Fail("Pemimpin ronde wajib menaruh kartu.");
+                return ActionResult.Fail("The round leader must play cards.");
 
             ConsecutivePasses++;
             Emit(new GameEvent { Type = GameEventType.Passed, PlayerId = playerId });
@@ -244,15 +244,15 @@ namespace Bluff.Core
         public ActionResult TryShoot(int shooterId)
         {
             if (Phase != GamePhase.ShootWindow || LastPlay == null)
-                return ActionResult.Fail("Tidak ada taruhan yang bisa ditembak sekarang.");
+                return ActionResult.Fail("There is no play to challenge now.");
             if (shooterId < 0 || shooterId >= players.Count)
-                return ActionResult.Fail("Pemain tidak dikenal.");
+                return ActionResult.Fail("Unknown player.");
             if (shooterId == LastPlay.PlayerId)
-                return ActionResult.Fail("Tidak bisa menembak taruhan sendiri.");
+                return ActionResult.Fail("You cannot challenge your own play.");
             if (LastPlay.Shielded)
-                return ActionResult.Fail("Taruhan ini dilindungi Tameng.");
+                return ActionResult.Fail("This play is protected by Shield.");
             if (players[shooterId].Bullets <= 0)
-                return ActionResult.Fail("Pelurumu sudah habis.");
+                return ActionResult.Fail("You have no bullets left.");
 
             var shooter = players[shooterId];
             var play = LastPlay;
@@ -335,7 +335,7 @@ namespace Bluff.Core
         public ActionResult CloseShootWindow()
         {
             if (Phase != GamePhase.ShootWindow)
-                return ActionResult.Fail("Jendela tembak tidak sedang terbuka.");
+                return ActionResult.Fail("The challenge window is closed.");
             CloseWindowInternal();
             return ActionResult.Success;
         }
@@ -349,37 +349,37 @@ namespace Bluff.Core
         public string PowerBlockReason(int playerId)
         {
             if (playerId < 0 || playerId >= players.Count)
-                return "Pemain tidak dikenal.";
+                return "Unknown player.";
             var player = players[playerId];
             if (player.Power == PowerType.None)
-                return "Kamu tidak punya Kartu Kuasa.";
+                return "You have no power card.";
             if (player.PowerUsed)
-                return "Kartu Kuasa sudah dipakai.";
+                return "Your power has been used.";
             switch (player.Power)
             {
                 case PowerType.MataElang:
                     if (Phase != GamePhase.ShootWindow || LastPlay == null || LastPlay.PlayerId == playerId)
-                        return "Mata Elang dipakai saat lawan baru menaruh kartu.";
+                        return "Use Eagle Eye after an opponent plays cards.";
                     return null;
                 case PowerType.Tameng:
                     if (Phase != GamePhase.AwaitingPlay || CurrentPlayer != playerId)
-                        return "Tameng dipasang saat kamu menaruh kartu.";
+                        return "Arm Shield when playing your cards.";
                     if (player.HandCount < 2)
-                        return "Tameng tidak bisa dipakai untuk taruhan terakhir.";
+                        return "Shield cannot protect your final play.";
                     return null;
                 case PowerType.Cermin:
-                    return "Cermin aktif otomatis saat kamu ketahuan bohong.";
+                    return "Mirror activates automatically when your bluff is caught.";
                 case PowerType.Badai:
                     if (Phase != GamePhase.AwaitingPlay || CurrentPlayer != playerId)
-                        return "Badai dipakai di giliranmu.";
+                        return "Use Storm on your turn.";
                     if (!HasRoundElement)
-                        return "Badai dipakai saat mengikuti ronde, bukan saat memimpin.";
+                        return "Use Storm when following a round. The leader cannot use it.";
                     return null;
                 default:
                     if (Phase != GamePhase.AwaitingPlay || CurrentPlayer != playerId)
-                        return "Kuasa ini dipakai di giliranmu.";
+                        return "Use this power on your turn.";
                     if (player.HandCount < 2)
-                        return "Kartumu tinggal 1, simpan untuk taruhan terakhir.";
+                        return "Keep your last card for your final play.";
                     return null;
             }
         }
@@ -387,13 +387,13 @@ namespace Bluff.Core
         public ActionResult TryUsePower(int playerId, PowerRequest request)
         {
             if (request == null)
-                return ActionResult.Fail("Permintaan kuasa kosong.");
+                return ActionResult.Fail("Missing power request.");
             string reason = PowerBlockReason(playerId);
             if (reason != null)
                 return ActionResult.Fail(reason);
             var player = players[playerId];
             if (request.Power != player.Power)
-                return ActionResult.Fail("Itu bukan Kartu Kuasa milikmu.");
+                return ActionResult.Fail("That is not your power card.");
 
             switch (player.Power)
             {
@@ -429,18 +429,18 @@ namespace Bluff.Core
                 {
                     var ids = request.CardIds;
                     if (ids == null || ids.Count < 1 || ids.Count > Powers.MaxPowerCards)
-                        return ActionResult.Fail("Pilih 1–" + Powers.MaxPowerCards + " kartu dulu.");
+                        return ActionResult.Fail("Select 1-" + Powers.MaxPowerCards + " cards first.");
                     var result = CollectCards(player, ids, out var chosen);
                     if (!result.Ok)
                         return result;
                     if (player.HandCount - chosen.Count < 1)
-                        return ActionResult.Fail("Sisakan minimal 1 kartu di tanganmu.");
+                        return ActionResult.Fail("Keep at least 1 card in your hand.");
 
                     if (player.Power == PowerType.Hadiah)
                     {
                         int target = request.TargetPlayer;
                         if (target < 0 || target >= players.Count || target == playerId)
-                            return ActionResult.Fail("Pilih lawan yang akan menerima hadiah.");
+                            return ActionResult.Fail("Choose an opponent to receive the gift.");
                         foreach (var card in chosen)
                             player.hand.RemoveAt(IndexOfCard(player.hand, card.Id));
                         players[target].hand.AddRange(chosen);
@@ -459,7 +459,7 @@ namespace Bluff.Core
                 }
 
                 default:
-                    return ActionResult.Fail("Kuasa ini tidak bisa dipakai sekarang.");
+                    return ActionResult.Fail("This power cannot be used now.");
             }
         }
 
@@ -474,11 +474,11 @@ namespace Bluff.Core
                 for (int j = 0; j < i; j++)
                 {
                     if (cardIds[j] == id)
-                        return ActionResult.Fail("Kartu yang sama dipilih dua kali.");
+                        return ActionResult.Fail("The same card was selected twice.");
                 }
                 int index = IndexOfCard(player.hand, id);
                 if (index < 0)
-                    return ActionResult.Fail("Kartu itu tidak ada di tanganmu.");
+                    return ActionResult.Fail("That card is not in your hand.");
                 chosen.Add(player.hand[index]);
             }
             return ActionResult.Success;

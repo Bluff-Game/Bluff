@@ -158,15 +158,15 @@ namespace Bluff.Game
         }
 
         /// <summary>Spasi atau B = BLUFF!</summary>
-        public static bool BluffPressed()
+        public static bool BluffPressed(bool allowSpace = true)
         {
             if (ActionsBlocked)
                 return false;
 #if ENABLE_INPUT_SYSTEM
             var kb = UnityEngine.InputSystem.Keyboard.current;
-            return kb != null && (kb.spaceKey.wasPressedThisFrame || kb.bKey.wasPressedThisFrame);
+            return kb != null && ((allowSpace && kb.spaceKey.wasPressedThisFrame) || kb.bKey.wasPressedThisFrame);
 #elif ENABLE_LEGACY_INPUT_MANAGER
-            return Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.B);
+            return (allowSpace && Input.GetKeyDown(KeyCode.Space)) || Input.GetKeyDown(KeyCode.B);
 #else
             return false;
 #endif

@@ -42,6 +42,7 @@ namespace Bluff.Game
         bool submitted;
         bool onlineLetPass;
         bool resultShown;
+        readonly string rewardId = System.Guid.NewGuid().ToString("N");
         float windowDuration;
         double windowEnds;
 
@@ -94,6 +95,8 @@ namespace Bluff.Game
             snapshot = state;
             view = TableView3D.Create(transform, Root, Canvas, snapshot, localSeat);
             var hud = view.Hud;
+            hud.EmoteRequested += (value,target) => { if (room != null) room.SendEmote(value,target); else view.ShowEmote(localSeat,target,value); };
+            if (room != null) room.EmoteReceived += OnEmote;
             hud.PlayRequested += OnHumanPlay;
             hud.PassRequested += OnHumanPass;
             hud.BluffRequested += () =>
@@ -165,7 +168,8 @@ namespace Bluff.Game
                         resultShown = true;
                         Resume();
                         Sfx.Play(snapshot.Winner == localSeat ? SfxType.Win : SfxType.Lose);
-                        view.Hud.ShowResult(snapshot, room.IsHost ? room.HostStats : null, localSeat, room.ReturnToRoom, LeaveOnline);
+                        int coins = Cosmetics.RewardMatch(rewardId, snapshot.Winner == localSeat);
+                        view.Hud.ShowResult(snapshot, room.IsHost ? room.HostStats : null, localSeat, room.ReturnToRoom, LeaveOnline, coins);
                     }
                 }
                 else if (packet.Type == RoomMessage.Open && packet.Revision == displayedRevision)
@@ -209,8 +213,11 @@ namespace Bluff.Game
             if (room != null) await room.LeaveAsync();
         }
 
+        void OnEmote(int seat,int target,int value) { if(view!=null) view.ShowEmote(seat,target,value); }
+
         void OnDestroy()
         {
+            if(room!=null) room.EmoteReceived -= OnEmote;
             Time.timeScale = 1f;
             if (engine != null)
                 engine.EventRaised -= OnEngineEvent;
@@ -279,7 +286,8 @@ namespace Bluff.Game
 
             yield return new WaitForSeconds(0.6f);
             Sfx.Play(engine.Winner == HumanId ? SfxType.Win : SfxType.Lose);
-            view.Hud.ShowResult(GameSnapshot.Create(engine, localSeat), stats, localSeat, SceneFlow.GoToGame, SceneFlow.GoToMenu);
+            int coins = AutoPlay ? 0 : Cosmetics.RewardMatch(rewardId, engine.Winner == localSeat);
+            view.Hud.ShowResult(GameSnapshot.Create(engine, localSeat), stats, localSeat, SceneFlow.GoToGame, SceneFlow.GoToMenu, coins);
         }
 
         IEnumerator PresentPending()
@@ -392,7 +400,7 @@ namespace Bluff.Game
                 yield break;
 
             // Seharusnya tidak terjadi (sudah diuji ribuan game), tapi jangan sampai permainan macet.
-            Debug.LogWarning("Bot " + botId + " melakukan langkah tidak sah: " + result.Error);
+            Debug.LogWarning("Bot " + botId + " made an invalid move:" + result.Error);
             if (engine.HasRoundElement)
             {
                 engine.TryPass(botId);
@@ -503,22 +511,23 @@ namespace Bluff.Game
                 view.EndHumanTurn();
                 view.HideShootWindow();
             }
-            pauseModal = UIKit.CreateModal(Root, room == null ? "Jeda" : "Menu · permainan tetap berjalan", new Vector2(640f, 620f), Resume);
+            pauseModal = UIKit.CreateModal(Root, room == null ? "Pause" : "Menu - online play continues", new Vector2(640f, 620f), Resume);
             var content = pauseModal.Content;
-            AddPauseButton(content, "LANJUTKAN", 0, Theme.Gold, Theme.TextDark, Resume);
-            AddPauseButton(content, "CARA BERMAIN", 1, Theme.PanelLight, Theme.Text, ShowRules);
+            AddPauseButton(content, "Resume", SpriteFactory.Emblem(GameIcon.Play), 0, Theme.Gold, Theme.TextDark, Resume);
+            AddPauseButton(content, "Guide", SpriteFactory.Emblem(GameIcon.Guide), 1, Theme.PanelLight, Theme.Text, ShowRules);
             if (room == null)
             {
-                AddPauseButton(content, "ULANGI DARI AWAL", 2, Theme.PanelLight, Theme.Text, SceneFlow.GoToGame);
-                AddPauseButton(content, "MENU UTAMA", 3, Theme.Panel, Theme.Muted, SceneFlow.GoToMenu);
+                AddPauseButton(content, "Restart match", SpriteFactory.Emblem(GameIcon.Restart), 2, Theme.PanelLight, Theme.Text, SceneFlow.GoToGame);
+                AddPauseButton(content, "Main menu", SpriteFactory.Emblem(GameIcon.Home), 3, Theme.Panel, Theme.Muted, SceneFlow.GoToMenu);
             }
-            else AddPauseButton(content, "KELUAR ROOM", 2, Theme.Panel, Theme.Muted, LeaveOnline);
+            else AddPauseButton(content, "Leave room", SpriteFactory.Emblem(GameIcon.Exit), 2, Theme.Panel, Theme.Muted, LeaveOnline);
         }
 
-        static void AddPauseButton(RectTransform parent, string label, int index, Color bg, Color fg, System.Action onClick)
+        static void AddPauseButton(RectTransform parent, string label, Sprite icon, int index, Color bg, Color fg, System.Action onClick)
         {
-            var button = UIKit.CreateButton(parent, label, label, new Vector2(460f, 82f), bg, fg, onClick, 32, 22f);
+            var button = UIKit.CreateButton(parent, label, label, new Vector2(460f, 82f), bg, fg, onClick, 32, 8f);
             button.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2(0f, -50f - index * 104f), new Vector2(460f, 82f));
+            UIKit.AddButtonIcon(button, icon, Color.white, 44f, 20f);
         }
 
         void Resume()

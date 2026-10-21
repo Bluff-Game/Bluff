@@ -7,6 +7,7 @@ using UnityEngine.UI;
 
 namespace Bluff.Game
 {
+    [DefaultExecutionOrder(300)]
     public sealed class Hud : MonoBehaviour
     {
         RectTransform root;
@@ -27,12 +28,16 @@ namespace Bluff.Game
         Text powerName;
         Text powerDesc;
         Text powerReason;
-        Button powerButton;
-        Text powerButtonLabel;
+        bool powerAvailable;
+        Image powerIcon;
+        Image powerRing;
+        Image powerStateIcon;
+        Text powerStatus;
+        Text powerCharge;
+        float shootFraction = 1f;
         PowerType myPower;
         bool powerSpent;
         bool powerPinned;
-        bool powerHovered;
         bool shieldArmed;
         bool targetMode;
         Text roundText;
@@ -77,7 +82,9 @@ namespace Bluff.Game
         bool pileLabelHidden;
         int pileCount;
         float layoutWidth;
-        string waitingHint = "Tunggu giliran lawan";
+        string waitingHint = "Waiting for opponents";
+        bool lastTurnVisible;
+        bool lastShootVisible;
 
         public event System.Action<List<int>, Element, bool> PlayRequested;
         public event System.Action PassRequested;
@@ -86,6 +93,10 @@ namespace Bluff.Game
         public event System.Action PeekRequested;
         public event System.Action PauseRequested;
         public event System.Action HelpRequested;
+        public event System.Action<int,int> EmoteRequested;
+        RectTransform emoteTray, recipientTray;
+        Button emoteButton;
+        float emoteReady;
         public event System.Action<PowerRequest> PowerRequested;
 
         public RectTransform Root => root;
@@ -145,17 +156,18 @@ namespace Bluff.Game
 
         void BuildTop()
         {
-            roundText = Text(root, "Round", "Bersiap…", 24);
+            roundText = Text(root, "Round", "Getting ready...", 24);
             roundText.rectTransform.Place(UIKit.TopLeft, new Vector2(224f, -52f), new Vector2(400f, 60f));
             logText = Text(root, "LastAction", "", 22, TextAnchor.UpperLeft);
+            logText.supportRichText = true;
             logText.color = Theme.Muted;
             logText.rectTransform.Place(UIKit.TopLeft, new Vector2(224f, -126f), new Vector2(400f, 72f));
             var task = UIKit.CreatePanel(root, "Task", Theme.Panel.WithAlpha(0.96f), 8f);
-            task.rectTransform.Place(UIKit.Top, new Vector2(0f, -78f), new Vector2(760f, 116f));
-            taskTitle = Text(task.transform, "Title", "Menunggu giliran", 34, TextAnchor.MiddleCenter, true);
-            taskTitle.rectTransform.Place(UIKit.Top, new Vector2(0f, -34f), new Vector2(720f, 46f));
-            taskText = Text(task.transform, "Instruction", "Tunggu giliran lawan", 28, TextAnchor.MiddleCenter);
-            taskText.rectTransform.Place(UIKit.Bottom, new Vector2(0f, 30f), new Vector2(720f, 42f));
+            task.rectTransform.Place(UIKit.Top, new Vector2(0f, -62f), new Vector2(540f, 84f));
+            taskTitle = Text(task.transform, "Title", "Waiting", 28, TextAnchor.MiddleCenter, true);
+            taskTitle.rectTransform.Place(UIKit.Top, new Vector2(0f, -26f), new Vector2(500f, 36f));
+            taskText = Text(task.transform, "Instruction", "Waiting for opponents", 22, TextAnchor.MiddleCenter);
+            taskText.rectTransform.Place(UIKit.Bottom, new Vector2(0f, 23f), new Vector2(500f, 32f));
             var banner = UIKit.CreatePanel(root, "Banner", Theme.Panel.WithAlpha(0.97f), 8f);
             banner.rectTransform.Place(UIKit.Top, new Vector2(0f, -196f), new Vector2(760f, 96f));
             bannerGroup = banner.gameObject.AddComponent<CanvasGroup>();
@@ -163,13 +175,47 @@ namespace Bluff.Game
             bannerGroup.alpha = 0f;
             bannerText = Text(banner.transform, "Message", "", 26, TextAnchor.MiddleCenter, true);
             bannerText.rectTransform.Stretch(20f, 20f, 10f, 10f);
-            var help = Button(root, "Help", "Panduan", () => HelpRequested?.Invoke());
-            help.GetComponent<RectTransform>().Place(UIKit.TopRight, new Vector2(-230f, -50f), new Vector2(152f, 60f));
-            var pause = Button(root, "Pause", "Jeda", () => PauseRequested?.Invoke());
-            pause.GetComponent<RectTransform>().Place(UIKit.TopRight, new Vector2(-80f, -50f), new Vector2(112f, 60f));
-            var cameraHint = Text(root, "CameraHint", "Tahan klik kanan: lihat sekitar · R: kembali", 22, TextAnchor.MiddleCenter);
-            cameraHint.color = Theme.Muted;
-            cameraHint.rectTransform.Place(UIKit.Bottom, new Vector2(0f, 30f), new Vector2(880f, 32f));
+            var help = UIKit.CreateLabeledIconButton(root, "Help", "Guide", SpriteFactory.Emblem(GameIcon.Guide), () => HelpRequested?.Invoke());
+            help.GetComponent<RectTransform>().Place(UIKit.TopRight, new Vector2(-168f, -62f), new Vector2(88f, 84f));
+            var pause = UIKit.CreateLabeledIconButton(root, "Pause", "Pause", SpriteFactory.Emblem(GameIcon.Pause), () => PauseRequested?.Invoke());
+            pause.GetComponent<RectTransform>().Place(UIKit.TopRight, new Vector2(-68f, -62f), new Vector2(88f, 84f));
+            emoteButton = UIKit.CreateLabeledIconButton(root,"Emotes","Emote",SpriteFactory.Emblem(GameIcon.Laugh),()=>{recipientTray.gameObject.SetActive(false);emoteTray.gameObject.SetActive(!emoteTray.gameObject.activeSelf);});
+            emoteButton.GetComponent<RectTransform>().Place(UIKit.TopRight,new Vector2(-268f,-62f),new Vector2(88f,84f));
+            emoteTray = UIKit.CreatePanel(root,"Emote Tray",Theme.Panel,8f,true).rectTransform;
+            emoteTray.Place(UIKit.TopRight,new Vector2(-200f,-158f),new Vector2(360f,84f));
+            for (int i=0;i<2;i++)
+            {
+                int value=i;
+                var react = UIKit.CreateButton(emoteTray,"Emote " + i,i==0?"Laugh":"Salute",new Vector2(164f,60f),Theme.PanelLight,Theme.Text,()=>{
+                    if(Time.unscaledTime<emoteReady) return;
+                    emoteTray.gameObject.SetActive(false); ChooseEmoteRecipient(value);
+                },20,6f);
+                react.GetComponent<RectTransform>().Place(UIKit.Center,new Vector2(i==0?-88f:88f,0f),new Vector2(164f,60f));
+                UIKit.AddButtonIcon(react,SpriteFactory.Emblem(i==0?GameIcon.Laugh:GameIcon.Applaud),Color.white,30f,8f);
+            }
+            emoteTray.gameObject.SetActive(false);
+            recipientTray=UIKit.CreatePanel(root,"Emote recipients",Theme.Panel,8f,true).rectTransform;
+            recipientTray.Place(UIKit.TopRight,new Vector2(-200f,-220f),new Vector2(360f,208f));
+            recipientTray.gameObject.SetActive(false);
+        }
+
+        void ChooseEmoteRecipient(int value)
+        {
+            foreach(Transform child in recipientTray) {child.gameObject.SetActive(false);Destroy(child.gameObject);}
+            int row=0;
+            for(int seat=0;seat<names.Length;seat++)
+            {
+                if(seat==humanId) continue;
+                int target=seat;
+                var button=UIKit.CreateButton(recipientTray,"Emote to "+seat,PlayerName(seat),new Vector2(336f,56f),Theme.PanelLight,Theme.Text,()=>{
+                    if(Time.unscaledTime<emoteReady || Time.timeScale<=0f || snapshot==null || snapshot.Phase==GamePhase.GameOver) return;
+                    emoteReady=Time.unscaledTime+4f;recipientTray.gameObject.SetActive(false);
+                    EmoteRequested?.Invoke(value,target);
+                },21,6f);
+                button.GetComponent<RectTransform>().Place(UIKit.Top,new Vector2(0,-38f-row++*64f),new Vector2(336f,56f));
+                UIKit.AddButtonIcon(button,SpriteFactory.Emblem(value==0?GameIcon.Laugh:GameIcon.Applaud),Color.white,32f,8f);
+            }
+            recipientTray.gameObject.SetActive(true);
         }
 
         void BuildPileLabel()
@@ -177,7 +223,7 @@ namespace Bluff.Game
             var panel = UIKit.CreatePanel(root, "PileLabel", Theme.Panel.WithAlpha(0.94f), 6f);
             pileLabel = panel.rectTransform;
             pileLabel.Place(UIKit.Center, Vector2.zero, new Vector2(138f, 44f));
-            pileLabelText = Text(pileLabel, "Count", "0 kartu", 24, TextAnchor.MiddleCenter, true);
+            pileLabelText = Text(pileLabel, "Count", "0 cards", 24, TextAnchor.MiddleCenter, true);
             pileLabelText.rectTransform.Stretch();
             pileLabel.gameObject.SetActive(false);
         }
@@ -189,45 +235,55 @@ namespace Bluff.Game
             var avatar = UIKit.CreatePanel(panel.transform, "AvatarMask", Theme.PanelLight, 6f);
             avatar.rectTransform.Place(UIKit.Left, new Vector2(64f, 0f), new Vector2(104f, 104f));
             avatar.gameObject.AddComponent<Mask>().showMaskGraphic = true;
-            AvatarPortrait.Create(avatar.transform, humanId).rectTransform.Stretch();
-            playerName = Text(panel.transform, "Name", "Kamu", 28, TextAnchor.MiddleLeft, true);
+            AvatarPortrait.Create(avatar.transform, humanId, Cosmetics.OutfitForSeat(humanId, humanId)).rectTransform.Stretch();
+            playerName = Text(panel.transform, "Name", "You", 28, TextAnchor.MiddleLeft, true);
             playerName.rectTransform.Place(UIKit.TopLeft, new Vector2(248f, -26f), new Vector2(240f, 38f));
-            playerCount = Text(panel.transform, "Cards", "0 kartu", 26);
+            playerCount = Text(panel.transform, "Cards", "0 cards", 26);
             playerCount.rectTransform.Place(UIKit.TopLeft, new Vector2(248f, -64f), new Vector2(240f, 32f));
-            playerBullets = Text(panel.transform, "Bullets", "0 peluru", 24);
+            playerBullets = Text(panel.transform, "Bullets", "0 bullets", 24);
             playerBullets.color = Theme.Muted;
             playerBullets.rectTransform.Place(UIKit.TopLeft, new Vector2(248f, -96f), new Vector2(240f, 32f));
         }
 
         void BuildPowerWidget()
         {
-            powerWidget = UIKit.CreateRect("PowerWidget", root);
-            powerWidget.Place(UIKit.BottomLeft, new Vector2(216f, 198f), new Vector2(384f, 64f));
-            var info = Button(powerWidget, "PowerInfo", "Kuasa", () =>
+            powerWidget = UIKit.CreatePanel(root, "PowerWidget", Theme.Panel.WithAlpha(.98f), 8f, true).rectTransform;
+            powerWidget.Place(UIKit.BottomLeft, new Vector2(216f, 216f), new Vector2(384f, 112f));
+            var quick = UIKit.CreateIconButton(powerWidget, "ActivatePower", null, new Vector2(96f, 96f), Theme.PanelLight, Theme.Gold, OnQuickPower);
+            quick.GetComponent<RectTransform>().Place(UIKit.Left, new Vector2(56f, 0f), new Vector2(96f, 96f));
+            powerIcon = quick.transform.Find("Icon").GetComponent<Image>();
+            var track = UIKit.CreateImage(quick.transform, "RingTrack", SpriteFactory.Ring, Theme.Border);
+            track.rectTransform.Stretch(2f, 2f, 2f, 2f);
+            powerRing = UIKit.CreateImage(quick.transform, "AvailabilityRing", SpriteFactory.Ring, Theme.Gold);
+            powerRing.rectTransform.Stretch(2f, 2f, 2f, 2f);
+            powerRing.type = Image.Type.Filled;
+            powerRing.fillMethod = Image.FillMethod.Radial360;
+            powerRing.fillOrigin = (int)Image.Origin360.Top;
+            powerRing.fillClockwise = true;
+            powerName = Text(powerWidget, "PowerName", "", 26, TextAnchor.MiddleLeft, true);
+            powerName.rectTransform.Place(UIKit.TopLeft, new Vector2(238f, -25f), new Vector2(244f, 34f));
+            powerStateIcon = UIKit.CreateImage(powerWidget, "StateIcon", SpriteFactory.Clock, Theme.Muted);
+            powerStateIcon.rectTransform.Place(UIKit.TopLeft, new Vector2(128f, -61f), new Vector2(24f, 24f));
+            powerStatus = Text(powerWidget, "PowerStatus", "", 21);
+            powerStatus.rectTransform.Place(UIKit.TopLeft, new Vector2(250f, -61f), new Vector2(208f, 30f));
+            powerCharge = Text(powerWidget, "Charge", "1 / match", 18);
+            powerCharge.color = Theme.Muted;
+            powerCharge.rectTransform.Place(UIKit.BottomLeft, new Vector2(204f, 21f), new Vector2(176f, 26f));
+            var info = Button(powerWidget, "PowerInfo", "Info", () =>
             {
                 powerPinned = !powerPinned;
-                ShowPowerDetails(powerPinned || powerHovered);
+                ShowPowerDetails(powerPinned);
             });
-            info.GetComponent<RectTransform>().Stretch();
-            powerName = info.GetComponentInChildren<Text>();
+            info.GetComponent<RectTransform>().Place(UIKit.BottomRight, new Vector2(-42f, 24f), new Vector2(64f, 36f));
+            info.GetComponentInChildren<Text>().fontSize = 18;
             var details = UIKit.CreatePanel(powerWidget, "PowerDetails", Theme.Panel.WithAlpha(0.98f), 8f, true);
             powerDetails = details.rectTransform;
-            powerDetails.Place(UIKit.Top, new Vector2(0f, 142f), new Vector2(384f, 284f));
+            powerDetails.Place(UIKit.Top, new Vector2(0f, 146f), new Vector2(384f, 216f));
             powerDesc = Text(powerDetails, "Description", "", 24, TextAnchor.UpperLeft);
             powerDesc.rectTransform.Place(UIKit.Top, new Vector2(0f, -65f), new Vector2(344f, 98f));
             powerReason = Text(powerDetails, "Availability", "", 22, TextAnchor.UpperLeft);
             powerReason.color = Theme.Muted;
             powerReason.rectTransform.Place(UIKit.Top, new Vector2(0f, -157f), new Vector2(344f, 74f));
-            powerButton = Button(powerDetails, "UsePower", "Gunakan", OnPowerButton, true);
-            powerButton.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(0f, 46f), new Vector2(344f, 60f));
-            powerButtonLabel = powerButton.GetComponentInChildren<Text>();
-            var trigger = powerWidget.gameObject.AddComponent<EventTrigger>();
-            var enter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
-            enter.callback.AddListener(_ => { powerHovered = true; ShowPowerDetails(true); });
-            trigger.triggers.Add(enter);
-            var exit = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
-            exit.callback.AddListener(_ => { powerHovered = false; ShowPowerDetails(powerPinned); });
-            trigger.triggers.Add(exit);
             powerDetails.gameObject.SetActive(false);
             powerWidget.gameObject.SetActive(false);
         }
@@ -238,16 +294,29 @@ namespace Bluff.Game
             RefreshPowerButton();
         }
 
+        void OnQuickPower()
+        {
+            if (Time.timeScale <= 0f || GameTutorial.IsShowing || InputCompat.ModalIsShowing()) return;
+            if (powerAvailable)
+                OnPowerButton();
+            else
+            {
+                powerPinned = true;
+                ShowPowerDetails(true);
+            }
+        }
+
         void BuildActions()
         {
-            actionPanel = UIKit.CreatePanel(root, "ActionDock", Theme.Panel.WithAlpha(0.97f), 8f, true).rectTransform;
+            actionPanel = UIKit.CreatePanel(root, "ActionDock", Theme.Panel.WithAlpha(0.92f), 10f, true).rectTransform;
+            UIKit.CreateOutline(actionPanel, "FocusBorder", Theme.Border.WithAlpha(0.75f), 10f).rectTransform.Stretch();
             turnControls = UIKit.CreateRect("TurnControls", actionPanel);
             turnControls.Stretch();
-            selectedText = Text(turnControls, "SelectedCards", "Belum ada kartu dipilih", 24, TextAnchor.UpperLeft);
+            selectedText = Text(turnControls, "SelectedCards", "Select your cards", 24, TextAnchor.UpperLeft);
             selectedText.rectTransform.Place(UIKit.Top, new Vector2(0f, -48f), new Vector2(416f, 64f));
             elementPicker = UIKit.CreateRect("ClaimPicker", turnControls);
             elementPicker.Place(UIKit.Top, new Vector2(0f, -189f), new Vector2(416f, 202f));
-            var title = Text(elementPicker, "Title", "Klaim sebagai", 24);
+            var title = Text(elementPicker, "Title", "Claim as", 24);
             title.rectTransform.Place(UIKit.Top, new Vector2(0f, -18f), new Vector2(416f, 32f));
             for (int i = 0; i < Elements.ClaimableCount; i++)
             {
@@ -262,6 +331,10 @@ namespace Bluff.Game
                 button.GetComponent<RectTransform>().Place(UIKit.TopLeft,
                     new Vector2(66f + i % 3 * 142f, -78f - i / 3 * 84f), new Vector2(132f, 72f));
                 button.GetComponentInChildren<Text>().fontSize = 24;
+                var elementIcon = UIKit.CreateImage(button.transform, "Icon", SpriteFactory.ElementIcon(element), Theme.Text);
+                elementIcon.rectTransform.Place(UIKit.Top, new Vector2(0f, -21f), new Vector2(30f, 30f));
+                button.GetComponentInChildren<Text>().rectTransform.Place(UIKit.Bottom, new Vector2(0f, 19f), new Vector2(128f, 30f));
+                button.GetComponentInChildren<Text>().fontSize = 21;
                 var ring = UIKit.CreateOutline(button.transform, "Selected", Theme.Gold, 6f);
                 ring.rectTransform.Stretch(-2f, -2f, -2f, -2f);
                 elementRings[element] = ring;
@@ -270,9 +343,9 @@ namespace Bluff.Game
             followText.rectTransform.Place(UIKit.Top, new Vector2(0f, -108f), new Vector2(416f, 42f));
             claimPreview = Text(turnControls, "ClaimPreview", "", 24, TextAnchor.MiddleLeft);
             claimPreview.rectTransform.Place(UIKit.Bottom, new Vector2(0f, 106f), new Vector2(416f, 56f));
-            passButton = Button(turnControls, "Pass", "Lewati", OnPassClicked);
+            passButton = Button(turnControls, "Pass", "Pass", OnPassClicked);
             passButton.GetComponent<RectTransform>().Place(UIKit.BottomLeft, new Vector2(86f, 46f), new Vector2(132f, 60f));
-            playButton = Button(turnControls, "Play", "Taruh kartu", OnPlayClicked, true);
+            playButton = Button(turnControls, "Play", "Play cards", OnPlayClicked, true);
             playButton.GetComponent<RectTransform>().Place(UIKit.BottomRight, new Vector2(-148f, 46f), new Vector2(256f, 60f));
             playLabel = playButton.GetComponentInChildren<Text>();
             shootControls = UIKit.CreateRect("ShootControls", actionPanel);
@@ -286,10 +359,13 @@ namespace Bluff.Game
             bluffButton = Button(shootControls, "Bluff", "BLUFF!", OnBluffClicked, true);
             bluffButton.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(0f, 192f), new Vector2(416f, 64f));
             bluffButton.GetComponentInChildren<Text>().fontSize = 30;
-            letPassButton = Button(shootControls, "LetPass", "Loloskan", OnLetPassClicked);
+            UIKit.AddButtonIcon(bluffButton, SpriteFactory.Crosshair, Theme.TextDark);
+            letPassButton = Button(shootControls, "LetPass", "Let pass", OnLetPassClicked);
             letPassButton.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(0f, 120f), new Vector2(416f, 60f));
-            peekButton = Button(shootControls, "Peek", "Intip · Mata Elang", OnPeekClicked);
+            UIKit.AddButtonIcon(letPassButton, SpriteFactory.Check, Theme.Text);
+            peekButton = Button(shootControls, "Peek", "Peek - Eagle Eye", OnPeekClicked);
             peekButton.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(0f, 48f), new Vector2(416f, 60f));
+            UIKit.AddButtonIcon(peekButton, SpriteFactory.PowerEmblem(PowerType.MataElang), Color.white);
         }
 
         void BuildStamp()
@@ -371,8 +447,8 @@ namespace Bluff.Game
                 mustLead = lead;
                 if (!lead) chosenElement = snapshot.RoundElement;
             }
-            waitingHint = snapshot == null ? "Menunggu data permainan" : snapshot.Phase == GamePhase.AwaitingPlay && snapshot.CurrentPlayer != humanId
-                ? "Giliran " + PlayerName(snapshot.CurrentPlayer) : "Tunggu giliran lawan";
+            waitingHint = snapshot == null ? "Waiting for match data" : snapshot.Phase == GamePhase.AwaitingPlay && snapshot.CurrentPlayer != humanId
+                ? "Turn: " + PlayerName(snapshot.CurrentPlayer) : "Waiting for opponents";
             if (snapshot != null)
             {
                 for (int id = 0; id < snapshot.PlayerCount; id++)
@@ -400,7 +476,7 @@ namespace Bluff.Game
                 SetRoundBadge(null, -1);
                 foreach (var label in labels.Values) label.gameObject.SetActive(false);
             }
-            playerName.text = valid ? PlayerName(humanId) : "Menunggu pemain";
+            playerName.text = valid ? PlayerName(humanId) : "Waiting for players";
             SetPlayerStatus(valid ? Value(snapshot.HandCounts, humanId) : 0, valid ? Value(snapshot.Bullets, humanId) : 0);
             myPower = valid && snapshot.Config != null && snapshot.Config.EnablePowers ? snapshot.MyPower : PowerType.None;
             powerSpent = valid && snapshot.MyPowerUsed;
@@ -444,7 +520,7 @@ namespace Bluff.Game
         }
 
         void OnHandWarning(string message) => Toast(message, Theme.Red);
-        public void Log(string line) => logText.text = StripTags(line);
+        public void Log(string line) => logText.text = line ?? string.Empty;
 
         public static string StripTags(string value)
         {
@@ -462,14 +538,14 @@ namespace Bluff.Game
 
         public void SetRoundBadge(Element? element, int leaderId)
         {
-            roundText.text = element.HasValue ? "Elemen ronde: " + Theme.ElementName(element.Value) :
-                leaderId >= 0 ? "Pemimpin: " + PlayerName(leaderId) : "Bersiap…";
+            roundText.text = element.HasValue ? "Round element: " + Theme.ElementName(element.Value) :
+                leaderId >= 0 ? "Leader: " + PlayerName(leaderId) : "Getting ready...";
         }
 
         public void SetPileCount(int count)
         {
             pileCount = Mathf.Max(0, count);
-            pileLabelText.text = pileCount + " kartu";
+            pileLabelText.text = CardCount(pileCount);
             pileLabel.gameObject.SetActive(pileCount > 0 && !pileLabelHidden);
         }
 
@@ -481,8 +557,8 @@ namespace Bluff.Game
 
         public void SetPlayerStatus(int count, int bullets)
         {
-            playerCount.text = Mathf.Max(0, count) + " kartu";
-            playerBullets.text = Mathf.Max(0, bullets) + " peluru";
+            playerCount.text = CardCount(Mathf.Max(0, count));
+            playerBullets.text = Mathf.Max(0, bullets) + (bullets == 1 ? " bullet" : " bullets");
         }
 
         public void SetMyPower(PowerType power, bool spent)
@@ -505,7 +581,7 @@ namespace Bluff.Game
 
         public IEnumerator ShowStamp(bool honest, string text = null)
         {
-            stampText.text = StripTags(text ?? (honest ? "JUJUR!" : "BOHONG!"));
+            stampText.text = StripTags(text ?? (honest ? "HONEST!" : "BLUFF!"));
             stampText.color = honest ? Theme.Text : Theme.Red;
             stampGroup.alpha = 1f;
             yield return Tween.Run(0.3f, t => stampText.rectTransform.localScale = Vector3.one * Mathf.Lerp(1.08f, 1f, Tween.EaseOutCubic(t)));
@@ -553,13 +629,17 @@ namespace Bluff.Game
             actionPending = false;
             SetTargetMode(false);
             if (hand != null) hand.SetInteractable(false);
+            shootFraction = 1f;
             timerFill.rectTransform.anchorMax = Vector2.one;
             Refresh();
         }
 
         public void UpdateShootWindow(float fraction)
         {
-            timerFill.rectTransform.anchorMax = new Vector2(float.IsNaN(fraction) ? 0f : Mathf.Clamp01(fraction), 1f);
+            shootFraction = float.IsNaN(fraction) ? 0f : Mathf.Clamp01(fraction);
+            timerFill.rectTransform.anchorMax = new Vector2(shootFraction, 1f);
+            if (myPower == PowerType.MataElang && !powerSpent && powerAvailable)
+                powerRing.fillAmount = shootFraction;
         }
 
         public void HideShootWindow()
@@ -622,13 +702,14 @@ namespace Bluff.Game
 
         void OnPowerButton()
         {
+            if (Time.timeScale <= 0f || GameTutorial.IsShowing || InputCompat.ModalIsShowing()) return;
             if (targetMode)
             {
                 SetTargetMode(false);
                 Refresh();
                 return;
             }
-            if (!powerButton.interactable || PowerBlockReason() != null || actionPending) return;
+            if (!powerAvailable || PowerBlockReason() != null || actionPending) return;
             switch (myPower)
             {
                 case PowerType.Tameng:
@@ -676,7 +757,7 @@ namespace Bluff.Game
 
         public void Refresh()
         {
-            if (playButton == null || powerButton == null) return;
+            if (playButton == null || powerWidget == null) return;
             var selected = hand != null ? hand.SelectedCards : new List<Card>();
             int count = selected.Count;
             if (humanTurn && mustLead && !manualElement) chosenElement = SuggestElement(selected);
@@ -686,6 +767,9 @@ namespace Bluff.Game
             if (shieldArmed && (PowerBlockReason() != null || Value(snapshot.HandCounts, humanId) - count < 1)) shieldArmed = false;
             bool turnVisible = humanTurn && !windowOpen && !actionPending;
             bool shootVisible = windowOpen && (humanCanShoot || humanCanPeek) && !actionPending;
+            bool actionModeChanged = turnVisible != lastTurnVisible || shootVisible != lastShootVisible;
+            lastTurnVisible = turnVisible;
+            lastShootVisible = shootVisible;
             turnControls.gameObject.SetActive(turnVisible);
             shootControls.gameObject.SetActive(shootVisible);
             actionPanel.gameObject.SetActive(turnVisible || shootVisible);
@@ -697,7 +781,7 @@ namespace Bluff.Game
                 pair.Value.enabled = chosenElement.HasValue && chosenElement.Value == pair.Key;
             playButton.interactable = canPlay && count >= 1 && count <= maxPerPlay && chosenElement.HasValue && !targetMode;
             StyleAction(playButton, playLabel, playButton.interactable);
-            playLabel.text = actionPending ? "Menunggu…" : count > 0 ? "Taruh " + count + " kartu" : "Taruh kartu";
+            playLabel.text = actionPending ? "Waiting..." : count > 0 ? "Play " + CardCount(count) : "Play cards";
             playButton.GetComponent<RectTransform>().Place(UIKit.BottomRight, new Vector2(mustLead ? -228f : -148f, 46f), new Vector2(mustLead ? 416f : 256f, 60f));
             var summary = new System.Text.StringBuilder();
             for (int i = 0; i < selected.Count; i++)
@@ -705,50 +789,73 @@ namespace Bluff.Game
                 if (i > 0) summary.Append(" · ");
                 summary.Append(Theme.ElementName(selected[i].Element));
             }
-            selectedText.text = count == 0 ? "Belum ada kartu dipilih" : "Dipilih: " + summary;
-            followText.text = chosenElement.HasValue ? "Klaim: " + Theme.ElementName(chosenElement.Value) : "";
-            claimPreview.text = count == 0 ? "Kartu boleh berbeda dari klaim." : !chosenElement.HasValue ? "Pilih elemen klaim." :
-                count + " kartu " + Theme.ElementName(chosenElement.Value) + " · " +
-                (selected.TrueForAll(card => card.Matches(chosenElement.Value)) ? "jujur" : "bohong") + (shieldArmed ? "\nTameng aktif" : "");
+            selectedText.text = count == 0 ? "Select your cards" : "Selected: " + summary;
+            followText.text = chosenElement.HasValue ? "Claim: " + Theme.ElementName(chosenElement.Value) : "";
+            claimPreview.text = count == 0 ? "You may bluff." : !chosenElement.HasValue ? "Choose an element." :
+                CardCount(count) + " " + Theme.ElementName(chosenElement.Value) + " · " +
+                (selected.TrueForAll(card => card.Matches(chosenElement.Value)) ? "honest" : "bluff") + (shieldArmed ? "\nShield active" : "");
             bluffButton.gameObject.SetActive(shootVisible && humanCanShoot);
             letPassButton.gameObject.SetActive(shootVisible && humanCanShoot);
             peekButton.gameObject.SetActive(shootVisible && humanCanPeek);
             bluffButton.interactable = humanCanShoot && !actionPending;
             letPassButton.interactable = humanCanShoot && !actionPending;
             peekButton.interactable = humanCanPeek && !actionPending && PowerBlockReason() == null;
-            timerLabel.text = PlayerName(shootTarget) + " mengklaim\n" + (snapshot?.LastPlayCount ?? 0) + " kartu " + Theme.ElementName(snapshot?.LastPlayClaim ?? Element.Matahari);
+            timerLabel.text = PlayerName(shootTarget) + " claims\n" + CardCount(snapshot?.LastPlayCount ?? 0) + " " + Theme.ElementName(snapshot?.LastPlayClaim ?? Element.Matahari);
             if (actionPending)
             {
-                taskTitle.text = "Menunggu hasil";
-                taskText.text = "Aksi sedang diproses";
+                taskTitle.text = "Waiting for result";
+                taskText.text = "Resolving action";
             }
             else if (canPlay)
             {
-                taskTitle.text = "Giliranmu";
-                taskText.text = targetMode ? "Pilih penerima Hadiah" : count == 0 ? "Pilih 1–" + maxPerPlay + " kartu" :
-                    !chosenElement.HasValue ? "Pilih elemen klaim" : "Periksa klaim, lalu taruh kartu";
+                taskTitle.text = "Your turn";
+                taskText.text = targetMode ? "Choose a recipient" : count == 0 ? "Select 1-" + maxPerPlay + " cards" :
+                    !chosenElement.HasValue ? "Choose an element" : "Ready to play";
             }
             else if (windowOpen)
             {
-                taskTitle.text = humanCanShoot ? "Curiga klaim lawan?" : "Menunggu hasil";
-                taskText.text = humanCanShoot ? "BLUFF! untuk menantang · atau Loloskan" : ShootWaitingReason();
+                taskTitle.text = humanCanShoot ? "Call their bluff?" : "Waiting for result";
+                taskText.text = humanCanShoot ? "Challenge or let it pass" : ShootWaitingReason();
             }
             else
             {
-                taskTitle.text = snapshot != null && snapshot.Winner >= 0 ? "Permainan selesai" : "Menunggu giliran";
-                taskText.text = string.IsNullOrWhiteSpace(waitingHint) ? "Tunggu giliran lawan" : waitingHint;
+                taskTitle.text = snapshot != null && snapshot.Winner >= 0 ? "Match complete" : "Waiting";
+                taskText.text = string.IsNullOrWhiteSpace(waitingHint) ? "Waiting for opponents" : waitingHint;
             }
             RefreshPowerButton();
             LayoutActions();
+            if (actionModeChanged)
+                FocusFirstAction();
+        }
+
+        void FocusFirstAction()
+        {
+            if (EventSystem.current == null || !actionPanel.gameObject.activeInHierarchy)
+                return;
+            var selected = EventSystem.current.currentSelectedGameObject;
+            if (selected != null && selected.activeInHierarchy)
+            {
+                var selectable = selected.GetComponentInParent<Selectable>();
+                if (selectable != null && selectable.IsInteractable())
+                    return;
+            }
+            foreach (var button in actionPanel.GetComponentsInChildren<Button>(true))
+            {
+                if (button.gameObject.activeInHierarchy && button.interactable)
+                {
+                    button.Select();
+                    return;
+                }
+            }
         }
 
         string ShootWaitingReason()
         {
-            if (snapshot == null) return "Menunggu data permainan";
-            if (snapshot.LastPlayShielded) return "Klaim dilindungi Tameng";
-            if (snapshot.LastPlayerId == humanId) return "Lawan sedang memeriksa klaimmu";
-            if (Value(snapshot.Bullets, humanId) <= 0) return "Peluru habis · tunggu hasil klaim";
-            return "Menunggu keputusan lawan";
+            if (snapshot == null) return "Waiting for match data";
+            if (snapshot.LastPlayShielded) return "Protected by Shield";
+            if (snapshot.LastPlayerId == humanId) return "Opponents are deciding";
+            if (Value(snapshot.Bullets, humanId) <= 0) return "No bullets left";
+            return "Waiting for opponents";
         }
 
         static void StyleAction(Button button, Text label, bool available)
@@ -759,30 +866,30 @@ namespace Bluff.Game
 
         string PowerBlockReason()
         {
-            if (!ValidViewer || snapshot.Config == null || humanId >= snapshot.HandCounts.Length) return "Pemain tidak dikenal.";
-            if (!snapshot.Config.EnablePowers || myPower == PowerType.None) return "Kamu tidak punya Kartu Kuasa.";
-            if (powerSpent) return "Kartu Kuasa sudah dipakai.";
+            if (!ValidViewer || snapshot.Config == null || humanId >= snapshot.HandCounts.Length) return "Unknown player.";
+            if (!snapshot.Config.EnablePowers || myPower == PowerType.None) return "You have no power card.";
+            if (powerSpent) return "Your power has been used.";
             int count = Value(snapshot.HandCounts, humanId);
             switch (myPower)
             {
                 case PowerType.MataElang:
                     if (snapshot.Phase != GamePhase.ShootWindow || snapshot.LastPlayerId < 0 || snapshot.LastPlayerId == humanId)
-                        return "Mata Elang dipakai saat lawan baru menaruh kartu.";
+                        return "Use Eagle Eye after an opponent plays cards.";
                     return null;
                 case PowerType.Tameng:
                     if (snapshot.Phase != GamePhase.AwaitingPlay || snapshot.CurrentPlayer != humanId)
-                        return "Tameng dipasang saat kamu menaruh kartu.";
-                    if (count < 2) return "Tameng tidak bisa dipakai untuk taruhan terakhir.";
+                        return "Arm Shield when playing your cards.";
+                    if (count < 2) return "Shield cannot protect your final play.";
                     return null;
                 case PowerType.Cermin:
-                    return "Cermin aktif otomatis saat kamu ketahuan bohong.";
+                    return "Mirror activates automatically when your bluff is caught.";
                 case PowerType.Badai:
-                    if (snapshot.Phase != GamePhase.AwaitingPlay || snapshot.CurrentPlayer != humanId) return "Badai dipakai di giliranmu.";
-                    if (!snapshot.HasRoundElement) return "Badai dipakai saat mengikuti ronde, bukan saat memimpin.";
+                    if (snapshot.Phase != GamePhase.AwaitingPlay || snapshot.CurrentPlayer != humanId) return "Use Storm on your turn.";
+                    if (!snapshot.HasRoundElement) return "Use Storm when following a round. The leader cannot use it.";
                     return null;
                 default:
-                    if (snapshot.Phase != GamePhase.AwaitingPlay || snapshot.CurrentPlayer != humanId) return "Kuasa ini dipakai di giliranmu.";
-                    if (count < 2) return "Kartumu tinggal 1, simpan untuk taruhan terakhir.";
+                    if (snapshot.Phase != GamePhase.AwaitingPlay || snapshot.CurrentPlayer != humanId) return "Use this power on your turn.";
+                    if (count < 2) return "Keep your last card for your final play.";
                     return null;
             }
         }
@@ -791,31 +898,26 @@ namespace Bluff.Game
         {
             powerWidget.gameObject.SetActive(myPower != PowerType.None);
             if (myPower == PowerType.None) return;
-            powerName.text = "Kuasa: " + PowerText.Name(myPower) + (powerSpent ? " · terpakai" : shieldArmed ? " · aktif" : " · info");
-            powerName.fontSize = 24;
+            powerName.text = PowerText.Name(myPower);
             powerDesc.text = PowerText.Short(myPower);
             string reason = PowerBlockReason();
             int count = hand != null ? hand.SelectedCount : 0;
             bool available = reason == null && !actionPending;
-            string label = "Gunakan " + PowerText.Name(myPower);
             switch (myPower)
             {
                 case PowerType.Cermin:
                     available = false;
-                    label = "Otomatis";
                     break;
                 case PowerType.MataElang:
                     available &= windowOpen && humanCanPeek;
-                    label = "Intip kartu";
                     break;
                 case PowerType.Tameng:
                     available &= CanPlay;
                     if (available && Value(snapshot.HandCounts, humanId) - count < 1)
                     {
                         available = false;
-                        reason = "Tameng tidak bisa dipakai untuk taruhan terakhir.";
+                        reason = "Shield cannot protect your final play.";
                     }
-                    label = shieldArmed ? "Batalkan Tameng" : "Pasang Tameng";
                     break;
                 case PowerType.Badai:
                     available &= CanPlay;
@@ -825,21 +927,33 @@ namespace Bluff.Game
                     if (available && (count < 1 || count > Powers.MaxPowerCards))
                     {
                         available = false;
-                        reason = "Pilih 1–" + Powers.MaxPowerCards + " kartu.";
+                        reason = "Select 1-" + Powers.MaxPowerCards + " cards.";
                     }
                     else if (available && Value(snapshot.HandCounts, humanId) - count < 1)
                     {
                         available = false;
-                        reason = "Sisakan minimal 1 kartu di tanganmu.";
+                        reason = "Keep at least 1 card in your hand.";
                     }
-                    label = targetMode ? "Batal memilih lawan" : myPower == PowerType.Bakar ? "Bakar kartu pilihan" : "Pilih penerima";
                     break;
             }
-            if (powerSpent) label = "Sudah dipakai";
-            powerButton.interactable = available || targetMode;
-            powerButtonLabel.text = label;
-            powerReason.text = actionPending ? "Menunggu hasil aksi" : reason ?? (shieldArmed ? "Dipakai bersama kartu yang kamu taruh." : "Sekali pakai.");
-            StyleAction(powerButton, powerButtonLabel, powerButton.interactable);
+            powerAvailable = available || targetMode;
+            powerReason.text = actionPending ? "Resolving" : reason ?? (shieldArmed ? "Applies to your next play." : "Single-use.");
+            bool passive = myPower == PowerType.Cermin && !powerSpent;
+            bool active = shieldArmed || targetMode;
+            Color stateColor = powerSpent ? Theme.Muted : active || passive ? Theme.Green : available ? Theme.Gold : Theme.Muted;
+            powerIcon.sprite = SpriteFactory.PowerEmblem(myPower);
+            powerIcon.rectTransform.Stretch(10f, 10f, 10f, 10f);
+            powerIcon.color = powerSpent ? Color.white.WithAlpha(.35f) : Color.white;
+            powerRing.color = stateColor;
+            powerRing.fillAmount = powerSpent || (!available && !active && !passive) ? 0f :
+                myPower == PowerType.MataElang && windowOpen ? shootFraction : 1f;
+            powerStatus.text = powerSpent ? "Used" : actionPending ? "Resolving..." : targetMode ? "Choose opponent" : shieldArmed ? "Armed" :
+                passive ? "Passive" : available ? "Ready" : CanPlay && myPower.NeedsCards() ?
+                count >= 1 && count <= Powers.MaxPowerCards ? "Keep 1 card" : "Select 1-2 cards" : "Unavailable";
+            powerStatus.color = stateColor;
+            powerStateIcon.sprite = powerSpent ? SpriteFactory.Close : active || passive ? SpriteFactory.Check : available ? SpriteFactory.Play : SpriteFactory.Clock;
+            powerStateIcon.color = stateColor;
+            powerCharge.text = powerSpent ? "0 / match" : "1 / match";
         }
 
         void LayoutActions()
@@ -871,21 +985,29 @@ namespace Bluff.Game
             return best;
         }
 
+        static string CardCount(int count) => count + (count == 1 ? " card" : " cards");
+
         string PlayerName(int id)
         {
             string name = StripTags(Value(names, id)).Trim();
-            return string.IsNullOrEmpty(name) ? id == humanId ? "Kamu" : "Pemain " + (id + 1) : name;
+            return string.IsNullOrEmpty(name) ? id == humanId ? "You" : "Player " + (id + 1) : name;
         }
 
-        public void ShowResult(GameSnapshot game, MatchStats stats, int human, System.Action rematch, System.Action menu)
+        public void ShowResult(GameSnapshot game, MatchStats stats, int human, System.Action rematch, System.Action menu, int coinsEarned = 0)
         {
             if (game == null) return;
             EndHumanTurn();
             HideShootWindow();
             SetSnapshot(game);
             int winner = game.Winner;
-            var modal = UIKit.CreateModal(root, winner < 0 ? "Permainan selesai" : winner == human ? "Kamu menang!" : PlayerName(winner) + " menang!", new Vector2(1180f, 820f), null);
+            var modal = UIKit.CreateModal(root, winner < 0 ? "Match complete" : winner == human ? "You win!" : PlayerName(winner) + " wins!", new Vector2(1180f, 820f), null);
             modal.Title.supportRichText = false;
+            if (coinsEarned > 0)
+            {
+                var reward = Text(modal.Content, "Coin Reward", "+" + coinsEarned + " coins - balance " + Cosmetics.Coins, 24, TextAnchor.MiddleCenter, true);
+                reward.color = Theme.Gold;
+                reward.rectTransform.Place(UIKit.Bottom, new Vector2(0f, 126f), new Vector2(900f,40f));
+            }
             bool hasStats = stats != null && stats.Lies != null && stats.LiesCaught != null && stats.Shots != null && stats.Hits != null &&
                 stats.Lies.Length >= game.PlayerCount && stats.LiesCaught.Length >= game.PlayerCount && stats.Shots.Length >= game.PlayerCount && stats.Hits.Length >= game.PlayerCount;
             var order = new List<int>();
@@ -893,7 +1015,7 @@ namespace Bluff.Game
             order.Sort((a, b) => a == b ? 0 : a == winner ? -1 : b == winner ? 1 : Value(game.HandCounts, a).CompareTo(Value(game.HandCounts, b)));
             float[] columns = hasStats ? new[] { -324f, -66f, 168f, 392f } : new[] { -260f, 320f };
             float[] widths = hasStats ? new[] { 344f, 172f, 256f, 192f } : new[] { 500f, 260f };
-            string[] headers = hasStats ? new[] { "Pemain", "Sisa kartu", "Bohong (ketahuan)", "Tembakan (jitu)" } : new[] { "Pemain", "Sisa kartu" };
+            string[] headers = hasStats ? new[] { "Player", "Cards left", "Bluffs (caught)", "Shots (hits)" } : new[] { "Player", "Cards left" };
             for (int c = 0; c < headers.Length; c++)
             {
                 var header = Text(modal.Content, "Header" + c, headers[c], 24, c == 0 ? TextAnchor.MiddleLeft : TextAnchor.MiddleCenter, true);
@@ -906,7 +1028,7 @@ namespace Bluff.Game
                 float y = -106f - row * 70f;
                 UIKit.CreatePanel(modal.Content, "Row" + row, id == winner ? Theme.PanelLight : Theme.Text.WithAlpha(0.025f), 6f)
                     .rectTransform.Place(UIKit.Top, new Vector2(0f, y), new Vector2(1040f, 62f));
-                var values = new List<string> { (row + 1) + ". " + PlayerName(id), Value(game.HandCounts, id) + " kartu" };
+                var values = new List<string> { (row + 1) + ". " + PlayerName(id), CardCount(Value(game.HandCounts, id)) };
                 if (hasStats)
                 {
                     values.Add(stats.Lies[id] + " (" + stats.LiesCaught[id] + ")");
@@ -920,15 +1042,18 @@ namespace Bluff.Game
             }
             if (rematch != null)
             {
-                var again = Button(modal.Content, "Again", "Main lagi", () => { modal.Close(); rematch(); }, true);
+                var again = Button(modal.Content, "Again", "Play again", () => { modal.Close(); rematch(); }, true);
                 again.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(-164f, 44f), new Vector2(300f, 64f));
             }
-            var toMenu = Button(modal.Content, "Menu", "Menu utama", () => { modal.Close(); menu?.Invoke(); });
+            var toMenu = Button(modal.Content, "Menu", "Main menu", () => { modal.Close(); menu?.Invoke(); });
             toMenu.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(rematch == null ? 0f : 164f, 44f), new Vector2(300f, 64f));
         }
 
         void LateUpdate()
         {
+            if (emoteButton != null) emoteButton.interactable = Time.unscaledTime >= emoteReady && Time.timeScale > 0f && !GameTutorial.IsShowing;
+            if (emoteTray != null && (Time.timeScale <= 0f || GameTutorial.IsShowing || InputCompat.ModalIsShowing())) emoteTray.gameObject.SetActive(false);
+            if (recipientTray != null && (Time.timeScale <= 0f || GameTutorial.IsShowing || InputCompat.ModalIsShowing())) recipientTray.gameObject.SetActive(false);
             if (!Mathf.Approximately(layoutWidth, root.rect.width)) LayoutActions();
             var cam = scene != null ? scene.Camera : null;
             if (cam != null)
@@ -941,7 +1066,7 @@ namespace Bluff.Game
                 }
                 ArrangeLabels();
                 if (pileCount > 0 && !pileLabelHidden && scene.PileAnchor != null)
-                    Project(pileLabel, scene.PileAnchor.position + Vector3.up * 0.02f, cam, new Vector2(90f, 36f));
+                    Project(pileLabel, scene.PileAnchor.position + new Vector3(.19f,0.04f,0f), cam, Vector2.zero, true);
             }
             if (vignetteAlpha > 0.001f)
             {
@@ -951,10 +1076,15 @@ namespace Bluff.Game
             }
             else vignette.enabled = false;
             if (Time.timeScale <= 0f || actionPending || GameTutorial.IsShowing || InputCompat.ModalIsShowing() || InputCompat.RightMouseHeld()) return;
-            if (humanCanShoot && InputCompat.BluffPressed()) OnBluffClicked();
+            var focused = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+            var focusedButton = focused != null ? focused.GetComponent<Button>() : null;
+            bool focusedControl = focusedButton != null && focusedButton.IsActive() && focusedButton.IsInteractable();
+            if (humanCanShoot && InputCompat.BluffPressed(!focusedControl || focusedButton == bluffButton)) OnBluffClicked();
             else if (CanPlay)
             {
-                if (InputCompat.ConfirmPressed() && playButton.interactable) OnPlayClicked();
+                bool anotherButton = focusedControl && focusedButton != playButton;
+                // Enter on a focused utility/ability button must not also submit the selected cards.
+                if (InputCompat.ConfirmPressed() && playButton.interactable && !anotherButton) OnPlayClicked();
                 else if (InputCompat.PassPressed() && passButton.interactable) OnPassClicked();
             }
         }
@@ -966,9 +1096,9 @@ namespace Bluff.Game
                 if (label.gameObject.activeSelf) visibleLabels.Add(label.Root);
             visibleLabels.Sort((a, b) => a.anchoredPosition.x.CompareTo(b.anchoredPosition.x));
             if (visibleLabels.Count < 2) return;
-            float left = root.rect.xMin + 172f;
-            float right = root.rect.xMax - (actionPanel.gameObject.activeSelf ? 644f : 172f);
-            const float spacing = 312f;
+            float left = root.rect.xMin + 138f;
+            float right = root.rect.xMax - 138f;
+            const float spacing = 244f;
             if (right - left < spacing * (visibleLabels.Count - 1)) return;
             float previous = left - spacing;
             foreach (var label in visibleLabels)
@@ -988,10 +1118,12 @@ namespace Bluff.Game
             }
         }
 
-        void Project(RectTransform target, Vector3 world, Camera cam, Vector2 offset)
+        void Project(RectTransform target, Vector3 world, Camera cam, Vector2 offset, bool atTable = false)
         {
             var screen = cam.WorldToScreenPoint(world);
-            bool visible = screen.z > 0f;
+            var viewport = cam.WorldToViewportPoint(world);
+            bool visible = viewport.z > cam.nearClipPlane && viewport.x > .02f && viewport.x < .98f && viewport.y > .02f && viewport.y < .98f;
+            if (atTable && visible && hand != null && hand.OccludesWorldPoint(cam,world)) visible = false;
             target.gameObject.SetActive(visible);
             if (!visible) return;
             var uiCamera = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
@@ -999,8 +1131,21 @@ namespace Bluff.Game
             var bounds = root.rect;
             var half = target.sizeDelta * 0.5f;
             local += offset;
+            if (atTable)
+            {
+                // A world label must never be clamped into the sky when its anchor leaves the view.
+                target.anchoredPosition = local;
+                bool inside = local.x-half.x > bounds.xMin && local.x+half.x < bounds.xMax && local.y-half.y > bounds.yMin && local.y+half.y < bounds.yMax;
+                target.gameObject.SetActive(inside);
+                return;
+            }
+            if (local.y - half.y < bounds.yMin + 360f)
+            {
+                target.gameObject.SetActive(false);
+                return;
+            }
             local.x = Mathf.Clamp(local.x, bounds.xMin + half.x + 24f, bounds.xMax - half.x - 24f);
-            local.y = Mathf.Clamp(local.y, bounds.yMin + 440f + half.y, bounds.yMax - half.y - 260f);
+            local.y = Mathf.Clamp(local.y, bounds.yMin + half.y + 24f, bounds.yMax - half.y - 120f);
             float dockLeft = bounds.xMax - 480f;
             float dockTop = bounds.yMin + actionPanel.anchoredPosition.y + actionPanel.sizeDelta.y * 0.5f;
             if (actionPanel.gameObject.activeSelf && local.x + half.x > dockLeft - 16f && local.y - half.y < dockTop + 80f)
