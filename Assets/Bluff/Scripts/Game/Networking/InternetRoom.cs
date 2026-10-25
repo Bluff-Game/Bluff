@@ -10,8 +10,6 @@ using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using Unity.Services.Authentication;
 using Unity.Services.Core;
-using Unity.Services.Relay;
-using Unity.Services.Relay.Models;
 using UnityEngine;
 
 namespace Bluff.Game
@@ -63,6 +61,21 @@ namespace Bluff.Game
             public RoomPacket Packet;
         }
 
+        /// <summary>Transport route for new rooms. Development tooling may replace it; shipped builds use Relay.</summary>
+        internal static IRoomEndpoint Endpoint = new RelayEndpoint();
+        /// <summary>Opens the table when a match starts. Headless tooling may present matches without scenes.</summary>
+        internal static Action TableRequested = SceneFlow.GoToGame;
+        /// <summary>Returns to the menu when the room goes back to its lobby or closes.</summary>
+        internal static Action LobbyRequested = SceneFlow.GoToMenu;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetHooks()
+        {
+            Endpoint = new RelayEndpoint();
+            TableRequested = SceneFlow.GoToGame;
+            LobbyRequested = SceneFlow.GoToMenu;
+        }
+
         public static InternetRoom Current { get; private set; }
         public static InternetRoom Ensure()
         {
@@ -82,6 +95,9 @@ namespace Bluff.Game
         public IReadOnlyList<RoomSeat> Seats => seats.AsReadOnly();
         public event Action Changed;
         public event Action<int,int,int> EmoteReceived;
+        /// <summary>A seat's connection or autopilot state changed during a match.</summary>
+        public event Action SeatStatusChanged;
+        public bool IsAutopilot(int seat) => InMatch && seat >= 0 && seat < seats.Count && !seats[seat].IsBot && seats[seat].Autopilot;
         internal GameEngine HostEngine => match?.Engine;
         internal MatchStats HostStats => match?.Stats;
         internal bool InputOpen => inputOpen;
@@ -113,15 +129,16 @@ namespace Bluff.Game
             if (IsBusy || IsConnected || stopping)
                 return;
             Error = "";
-            if (!Guid.TryParse(Application.cloudProjectId, out var projectId) || projectId == Guid.Empty)
+            var endpoint = Endpoint;
+            if (endpoint.UsesServices && (!Guid.TryParse(Application.cloudProjectId, out var projectId) || projectId == Guid.Empty))
             {
                 SetError("Online rooms are not configured. Link a Unity Project ID in Project Settings > Services, then enable anonymous Authentication and Relay in Unity Dashboard.");
                 return;
             }
             code = (code ?? "").Trim().ToUpperInvariant();
-            if (!host && !ValidCode(code))
+            if (!host && !endpoint.ValidCode(code))
             {
-                SetError("Invalid room code. Enter the host's Relay code.");
+                SetError("Invalid room code. Enter the host's room code.");
                 return;
             }
             if (serviceTask != null && !serviceTask.IsCompleted)
@@ -137,26 +154,22 @@ namespace Bluff.Game
             Changed?.Invoke();
             try
             {
-                if (UnityServices.State != ServicesInitializationState.Initialized)
-                    await AwaitService(UnityServices.InitializeAsync(), token);
-                token.ThrowIfCancellationRequested();
-                if (!AuthenticationService.Instance.IsSignedIn)
+                if (endpoint.UsesServices)
                 {
-                    ownsAuthentication = true;
-                    await AwaitService(AuthenticationService.Instance.SignInAnonymouslyAsync(), token);
+                    if (UnityServices.State != ServicesInitializationState.Initialized)
+                        await AwaitService(UnityServices.InitializeAsync(), token);
+                    token.ThrowIfCancellationRequested();
+                    if (!AuthenticationService.Instance.IsSignedIn)
+                    {
+                        ownsAuthentication = true;
+                        await AwaitService(AuthenticationService.Instance.SignInAnonymouslyAsync(), token);
+                    }
+                    token.ThrowIfCancellationRequested();
                 }
-                token.ThrowIfCancellationRequested();
                 BuildNetwork(RoomProtocol.CleanName(name));
-                string connection = Application.platform == RuntimePlatform.WebGLPlayer ? "wss" : "dtls";
-                transport.UseWebSockets = connection == "wss";
                 if (host)
                 {
-                    var allocationTask = RelayService.Instance.CreateAllocationAsync(3);
-                    await AwaitService(allocationTask, token);
-                    var allocation = await allocationTask;
-                    token.ThrowIfCancellationRequested();
-                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, connection));
-                    var codeTask = RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+                    var codeTask = endpoint.HostAsync(transport, 3, token);
                     await AwaitService(codeTask, token);
                     string joinCode = await codeTask;
                     token.ThrowIfCancellationRequested();
@@ -170,11 +183,7 @@ namespace Bluff.Game
                 }
                 else
                 {
-                    var allocationTask = RelayService.Instance.JoinAllocationAsync(code);
-                    await AwaitService(allocationTask, token);
-                    var allocation = await allocationTask;
-                    token.ThrowIfCancellationRequested();
-                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, connection));
+                    await AwaitService(endpoint.JoinAsync(transport, code, token), token);
                     if (!network.StartClient()) throw new InvalidOperationException();
                     RegisterMessages();
                     while (!IsConnected)
@@ -329,7 +338,10 @@ namespace Bluff.Game
                 peers.Remove(id);
                 if (InMatch)
                 {
-                    Abort("A player disconnected. Match ended; create a new room to play again.");
+                    // The match goes on: a bot plays the empty seat until the room returns to its lobby.
+                    seats[peer.Seat].Connected = false;
+                    seats[peer.Seat].Autopilot = true;
+                    BroadcastStatus();
                     return;
                 }
                 seats[peer.Seat] = new RoomSeat { SeatId = peer.Seat, Name = "Bot " + peer.Seat, IsBot = true };
@@ -422,6 +434,9 @@ namespace Bluff.Game
                     if (InMatch && p.Revision == revision && match != null && match.Engine.Phase == GamePhase.GameOver)
                         returnRequested = true;
                     break;
+                case RoomMessage.Resume:
+                    if (InMatch && seats[peer.Seat].Autopilot) SetAutopilot(peer.Seat, false);
+                    break;
                 case RoomMessage.Intent:
                     if (!InMatch || !inputOpen || !peer.Gate.Accept(p.Sequence, p.Revision, revision, Time.realtimeSinceStartupAsDouble))
                     {
@@ -482,6 +497,16 @@ namespace Bluff.Game
                 case RoomMessage.Rejected:
                     if (InMatch) presentation.Enqueue(p);
                     break;
+                case RoomMessage.Status:
+                    if (!InMatch || seats.Count != 4) return;
+                    for (int i = 0; i < 4; i++)
+                    {
+                        seats[i].Connected = p.Seats[i].Connected;
+                        seats[i].Autopilot = p.Seats[i].Autopilot;
+                    }
+                    if (IsAutopilot(LocalSeat)) inputOpen = false;
+                    SeatStatusChanged?.Invoke();
+                    break;
                 case RoomMessage.ReturnRoom:
                     if (InMatch) ResetToRoom();
                     break;
@@ -504,6 +529,28 @@ namespace Bluff.Game
         {
             if (!InMatch || value < 0 || value > 1 || target < 0 || target >= seats.Count || target == LocalSeat) return;
             SendHost(new RoomPacket { Type=RoomMessage.Emote, Seat=LocalSeat, Target=target, Emote=value });
+        }
+
+        /// <summary>Asks the host to stop the autopilot that took over this player's seat.</summary>
+        public void TakeControl()
+        {
+            if (IsAutopilot(LocalSeat)) SendHost(new RoomPacket { Type = RoomMessage.Resume, Revision = revision });
+        }
+
+        internal void SetAutopilot(int seat, bool value)
+        {
+            if (!IsHost || !InMatch || seat < 0 || seat >= seats.Count || seats[seat].IsBot || seats[seat].Autopilot == value) return;
+            if (!value && !seats[seat].Connected) return;
+            seats[seat].Autopilot = value;
+            if (!value) match?.ResetIdle(seat);
+            BroadcastStatus();
+        }
+
+        void BroadcastStatus()
+        {
+            if (!IsHost || !InMatch) return;
+            Broadcast(new RoomPacket { Type = RoomMessage.Status, Revision = revision, Seats = seats.ToArray() });
+            SeatStatusChanged?.Invoke();
         }
 
         public void StartMatch()
@@ -531,10 +578,11 @@ namespace Bluff.Game
             presentation.Clear();
             intents.Clear();
             foreach (var peer in peers.Values) { peer.SceneReady = false; peer.Presented = 0; }
+            foreach (var seat in seats) seat.Autopilot = false;
             sceneDeadline = Time.realtimeSinceStartupAsDouble + ReadyTimeout;
             Status = "Loading table...";
             Changed?.Invoke();
-            SceneFlow.GoToGame();
+            TableRequested();
         }
 
         internal void ReturnToRoom()
@@ -552,7 +600,18 @@ namespace Bluff.Game
             match = null;
             presentation.Clear();
             intents.Clear();
-            foreach (var seat in seats) seat.Ready = seat.SeatId == 0 || seat.IsBot;
+            if (IsHost)
+            {
+                // Players who dropped during the match leave their seats to bots in the lobby.
+                for (int i = 1; i < seats.Count; i++)
+                    if (!seats[i].IsBot && !seats[i].Connected)
+                        seats[i] = new RoomSeat { SeatId = i, Name = "Bot " + i, IsBot = true };
+            }
+            foreach (var seat in seats)
+            {
+                seat.Ready = seat.SeatId == 0 || seat.IsBot;
+                seat.Autopilot = false;
+            }
             foreach (var peer in peers.Values)
             {
                 peer.SceneReady = false;
@@ -560,7 +619,7 @@ namespace Bluff.Game
             }
             Status = "Get ready for the next match.";
             Changed?.Invoke();
-            SceneFlow.GoToMenu();
+            LobbyRequested();
         }
 
         internal void AttachScene()
@@ -722,7 +781,7 @@ namespace Bluff.Game
             Changed?.Invoke();
             if (wasMatch && !quitting)
             {
-                SceneFlow.GoToMenu();
+                LobbyRequested();
                 if (failed) StartCoroutine(ShowFailure(Error));
             }
         }
@@ -784,13 +843,6 @@ namespace Bluff.Game
         {
             Error = Status = value;
             Changed?.Invoke();
-        }
-
-        static bool ValidCode(string code)
-        {
-            if (code.Length < 4 || code.Length > 16) return false;
-            foreach (char c in code) if (!(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9')) return false;
-            return true;
         }
 
         void OnApplicationQuit()

@@ -10,9 +10,17 @@ namespace Bluff.Game
 {
     internal sealed class InternetMatch
     {
+        /// <summary>Time a human has to act on their turn before the host acts for them.</summary>
+        public const float TurnSeconds = 30f;
+        /// <summary>Turns in a row a human may time out before a bot takes over their seat.</summary>
+        public const int IdleTurnsBeforeAutopilot = 2;
+
         readonly InternetRoom room;
         readonly List<GameEvent> pending = new List<GameEvent>();
+        // Every seat has a brain observing the match, so a bot can take over a human seat with full memory.
         readonly BotBrain[] brains = new BotBrain[4];
+        readonly bool[] bots = new bool[4];
+        readonly int[] timeouts = new int[4];
         readonly bool[] passed = new bool[4];
         readonly int seed = CreateSeed();
         readonly float speed = Mathf.Clamp(GameSettings.Speed, 0.75f, 1.5f);
@@ -24,12 +32,11 @@ namespace Bluff.Game
         {
             this.room = room;
             var names = new List<string>();
-            var bots = new List<bool>();
             for (int i = 0; i < 4; i++)
             {
                 names.Add(room.Seats[i].Name);
-                bots.Add(room.Seats[i].IsBot);
-                if (bots[i]) brains[i] = new BotBrain(i, 4, GameSettings.Difficulty, seed + i * 7919);
+                bots[i] = room.Seats[i].IsBot;
+                brains[i] = new BotBrain(i, 4, bots[i] ? GameSettings.Difficulty : BotDifficulty.Normal, seed + i * 7919);
             }
             Engine = new GameEngine(new GameConfig
             {
@@ -51,8 +58,13 @@ namespace Bluff.Game
         {
             pending.Add(e);
             Stats.Observe(e);
-            for (int i = 0; i < 4; i++) brains[i]?.Observe(e.RedactedFor(i));
+            for (int i = 0; i < 4; i++) brains[i].Observe(e.RedactedFor(i));
         }
+
+        static double Now => Time.realtimeSinceStartupAsDouble;
+
+        /// <summary>True when the host's bot logic plays this seat: a bot seat, or a human seat on autopilot.</summary>
+        bool BotPlays(int id) => bots[id] || room.IsAutopilot(id);
 
         public IEnumerator Run()
         {
@@ -66,7 +78,7 @@ namespace Bluff.Game
             {
                 if (Engine.Phase == GamePhase.AwaitingPlay)
                 {
-                    if (brains[Engine.CurrentPlayer] != null) yield return BotTurn(Engine.CurrentPlayer);
+                    if (BotPlays(Engine.CurrentPlayer)) yield return BotTurn(Engine.CurrentPlayer);
                     else yield return HumanTurn();
                 }
                 else if (Engine.Phase == GamePhase.ShootWindow)
@@ -86,9 +98,15 @@ namespace Bluff.Game
         IEnumerator HumanTurn()
         {
             int player = Engine.CurrentPlayer;
-            room.Open();
-            while (room.InMatch && Engine.Phase == GamePhase.AwaitingPlay && Engine.CurrentPlayer == player)
+            double deadline = Now + TurnSeconds;
+            room.Open(TurnSeconds);
+            while (room.InMatch && Engine.Phase == GamePhase.AwaitingPlay && Engine.CurrentPlayer == player && !room.IsAutopilot(player))
             {
+                if (Now >= deadline)
+                {
+                    TimeOut(player);
+                    yield break;
+                }
                 if (!room.TakeIntent(out var p)) { yield return null; continue; }
                 if (p.Seat != player) { room.Reject(p.Seat, "It is not your turn."); continue; }
                 ActionResult result;
@@ -108,9 +126,32 @@ namespace Bluff.Game
                         continue;
                 }
                 if (!result.Ok) { room.Reject(p.Seat, result.Error); continue; }
+                timeouts[player] = 0;
+                // Animations do not count against the turn timer.
+                double before = Now;
                 yield return Flush();
-                if (room.InMatch && Engine.Phase == GamePhase.AwaitingPlay && Engine.CurrentPlayer == player) room.Open();
+                deadline += Now - before;
+                if (room.InMatch && Engine.Phase == GamePhase.AwaitingPlay && Engine.CurrentPlayer == player)
+                    room.Open(Mathf.Max(1f, (float)(deadline - Now)));
             }
+        }
+
+        /// <summary>A player took back control: they get the full allowance of timeouts again.</summary>
+        public void ResetIdle(int id) => timeouts[id] = 0;
+
+        /// <summary>The turn timer ran out: pass when allowed, otherwise play one card honestly.</summary>
+        void TimeOut(int player)
+        {
+            if (!Engine.HasRoundElement || !Engine.TryPass(player).Ok)
+            {
+                var card = Engine.Players[player].Hand[0];
+                var claim = Engine.HasRoundElement ? Engine.RoundElement : card.IsWild ? Element.Matahari : card.Element;
+                Engine.TryPlay(player, new[] { card.Id }, claim);
+            }
+            if (++timeouts[player] >= IdleTurnsBeforeAutopilot)
+                room.SetAutopilot(player, true);
+            else
+                room.Reject(player, "Time ran out, so the table acted for you.");
         }
 
         IEnumerator BotTurn(int id)
@@ -143,7 +184,7 @@ namespace Bluff.Game
             double botDelay = double.MaxValue;
             for (int i = 0; i < 4; i++)
             {
-                if (brains[i] == null || !Engine.CanShoot(i)) continue;
+                if (!BotPlays(i) || !Engine.CanShoot(i)) continue;
                 var decision = brains[i].DecideShoot(GameSnapshot.Create(Engine, i));
                 if (decision.UsePeek && Engine.TryUsePower(i, PowerRequest.Of(PowerType.MataElang)).Ok)
                 {
@@ -171,6 +212,7 @@ namespace Bluff.Game
                 bool changed = false;
                 while (room.TakeIntent(out var p))
                 {
+                    if (BotPlays(p.Seat)) continue;
                     if (passed[p.Seat]) { room.Reject(p.Seat, "You already let this play pass."); continue; }
                     if (p.Action == RoomAction.LetPass && HumanEligible(p.Seat))
                     {
@@ -213,7 +255,7 @@ namespace Bluff.Game
             if (room.InMatch && Engine.Phase == GamePhase.ShootWindow) Engine.CloseShootWindow();
         }
 
-        bool HumanEligible(int id) => brains[id] == null && (Engine.CanShoot(id) ||
+        bool HumanEligible(int id) => !BotPlays(id) && (Engine.CanShoot(id) ||
             (Engine.Players[id].Power == PowerType.MataElang && Engine.PowerBlockReason(id) == null));
     }
 }
