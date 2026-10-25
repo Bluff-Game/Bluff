@@ -45,6 +45,10 @@ namespace Bluff.Game
         readonly string rewardId = System.Guid.NewGuid().ToString("N");
         float windowDuration;
         double windowEnds;
+        double turnEnds;
+        readonly bool[] seatConnected = { true, true, true, true };
+        readonly bool[] seatAutopilot = new bool[4];
+        UIKit.Modal autopilotModal;
 
         public GameEngine Engine => room != null ? room.HostEngine : engine;
 
@@ -96,7 +100,12 @@ namespace Bluff.Game
             view = TableView3D.Create(transform, Root, Canvas, snapshot, localSeat);
             var hud = view.Hud;
             hud.EmoteRequested += (value,target) => { if (room != null) room.SendEmote(value,target); else view.ShowEmote(localSeat,target,value); };
-            if (room != null) room.EmoteReceived += OnEmote;
+            if (room != null)
+            {
+                room.EmoteReceived += OnEmote;
+                room.SeatStatusChanged += OnSeatStatus;
+                OnSeatStatus();
+            }
             hud.PlayRequested += OnHumanPlay;
             hud.PassRequested += OnHumanPass;
             hud.BluffRequested += () =>
@@ -166,6 +175,7 @@ namespace Bluff.Game
                     if (snapshot.Phase == GamePhase.GameOver && !resultShown)
                     {
                         resultShown = true;
+                        RefreshAutopilotPrompt();
                         Resume();
                         Sfx.Play(snapshot.Winner == localSeat ? SfxType.Win : SfxType.Lose);
                         int coins = Cosmetics.RewardMatch(rewardId, snapshot.Winner == localSeat);
@@ -178,6 +188,7 @@ namespace Bluff.Game
                     submitted = false;
                     windowDuration = packet.Seconds;
                     windowEnds = Time.realtimeSinceStartupAsDouble + packet.Seconds;
+                    turnEnds = snapshot.IsMyTurn && packet.Seconds > 0f ? windowEnds : 0;
                     RefreshOnlineInput();
                 }
                 else if (packet.Type == RoomMessage.Rejected && view != null)
@@ -192,7 +203,12 @@ namespace Bluff.Game
         void RefreshOnlineInput()
         {
             if (view == null || snapshot == null || !onlineInput || paused || submitted || GameTutorial.IsShowing) return;
-            if (snapshot.IsMyTurn) view.BeginHumanTurn(snapshot);
+            if (room.IsAutopilot(localSeat)) return;
+            if (snapshot.IsMyTurn)
+            {
+                view.BeginHumanTurn(snapshot);
+                view.Hud.SetTurnTimer(turnEnds);
+            }
             else if (snapshot.Phase == GamePhase.ShootWindow && !onlineLetPass)
                 view.ShowShootWindow(snapshot.CanShoot, snapshot.HasPower && snapshot.MyPower == PowerType.MataElang && snapshot.LastPlayerId != localSeat, snapshot.LastPlayerId);
         }
@@ -215,9 +231,58 @@ namespace Bluff.Game
 
         void OnEmote(int seat,int target,int value) { if(view!=null) view.ShowEmote(seat,target,value); }
 
+        void OnSeatStatus()
+        {
+            if (room == null || view == null) return;
+            var seats = room.Seats;
+            for (int i = 0; i < seats.Count && i < seatConnected.Length; i++)
+            {
+                var seat = seats[i];
+                if (seat.IsBot || (seat.Connected == seatConnected[i] && seat.Autopilot == seatAutopilot[i])) continue;
+                if (i != localSeat)
+                {
+                    string name = Hud.StripTags(seat.Name);
+                    if (!seat.Connected && seatConnected[i]) view.Toast(name + " disconnected. A bot is playing for them.", Theme.Red);
+                    else if (seat.Autopilot && !seatAutopilot[i]) view.Toast(name + " is idle. A bot is playing for them.", Theme.Muted);
+                    else if (!seat.Autopilot && seatAutopilot[i]) view.Toast(name + " is back in control.", Theme.Green);
+                }
+                seatConnected[i] = seat.Connected;
+                seatAutopilot[i] = seat.Autopilot;
+                view.Hud.SetSeatNote(i, !seat.Connected ? "offline" : seat.Autopilot ? "bot" : null);
+            }
+            RefreshAutopilotPrompt();
+        }
+
+        void RefreshAutopilotPrompt()
+        {
+            bool on = room != null && room.IsAutopilot(localSeat) && (snapshot == null || snapshot.Phase != GamePhase.GameOver);
+            if (on && autopilotModal == null)
+            {
+                onlineInput = false;
+                submitted = false;
+                view.EndHumanTurn();
+                view.HideShootWindow();
+                autopilotModal = UIKit.CreateModal(Root, "Autopilot", new Vector2(760f, 420f), null);
+                var note = UIKit.CreateText(autopilotModal.Content, "Note", "Your turn timed out twice, so a bot is playing your seat. The match continues either way.", 26, Theme.Text, TextAnchor.UpperCenter);
+                note.rectTransform.Place(UIKit.Top, new Vector2(0f, -80f), new Vector2(620f, 110f));
+                var takeBack = UIKit.CreateButton(autopilotModal.Content, "TakeControl", "Take back control", new Vector2(360f, 68f), Theme.Gold, Theme.TextDark, () => room?.TakeControl(), 28);
+                takeBack.GetComponent<RectTransform>().Place(UIKit.Bottom, new Vector2(0f, 40f), new Vector2(360f, 68f));
+            }
+            else if (!on && autopilotModal != null)
+            {
+                autopilotModal.Close();
+                autopilotModal = null;
+                RefreshOnlineInput();
+            }
+        }
+
         void OnDestroy()
         {
-            if(room!=null) room.EmoteReceived -= OnEmote;
+            if (room != null)
+            {
+                room.EmoteReceived -= OnEmote;
+                room.SeatStatusChanged -= OnSeatStatus;
+            }
             Time.timeScale = 1f;
             if (engine != null)
                 engine.EventRaised -= OnEngineEvent;
