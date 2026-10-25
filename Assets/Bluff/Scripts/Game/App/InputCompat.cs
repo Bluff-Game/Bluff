@@ -187,6 +187,21 @@ namespace Bluff.Game
 #endif
         }
 
+        /// <summary>M = mute or unmute voice chat.</summary>
+        public static bool MutePressed()
+        {
+            if (ActionsBlocked)
+                return false;
+#if ENABLE_INPUT_SYSTEM
+            var kb = UnityEngine.InputSystem.Keyboard.current;
+            return kb != null && kb.mKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetKeyDown(KeyCode.M);
+#else
+            return false;
+#endif
+        }
+
         /// <summary>P = pass.</summary>
         public static bool PassPressed()
         {
