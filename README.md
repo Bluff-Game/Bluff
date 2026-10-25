@@ -91,7 +91,9 @@ Online play uses Netcode for GameObjects, Unity Transport, Relay, and Anonymous 
 3. Review service quotas before distributing public builds.
 4. Verify host and client builds on different devices and networks.
 
-Choose **Play online**, create a room, and share its code. Other players join and mark themselves ready; empty seats become bots. Online pause does not stop the shared match. Disconnects end the session; host migration and mid-match reconnect are not implemented.
+Choose **Play online**, create a room, and share its code. Other players join and mark themselves ready; empty seats become bots. Online pause does not stop the shared match.
+
+Each turn has a 30-second timer. When it runs out, the table passes for that player, or plays one card honestly if they lead the round. After two timeouts in a row, a bot takes over the seat until the player chooses **Take back control**. If a player disconnects, a bot finishes the match in their seat, and the seat returns to a regular bot in the lobby. If the host leaves, the room closes. Host migration and mid-match reconnect are not implemented.
 
 No private service keys belong in the source. Missing service configuration produces an error instead of a simulated room.
 
