@@ -16,6 +16,13 @@ namespace Bluff.Game
         const string KeyPowers = "bluff.powers";
         const string KeyTutorialSeen = "bluff.tutorialSeen";
         const string KeyLookSensitivity = "bluff.lookSensitivity";
+        const string KeyVoiceMuted = "bluff.voiceMuted";
+        const string KeyVoiceDeafened = "bluff.voiceDeafened";
+        const string KeyVoiceVolume = "bluff.voiceVolume";
+
+        /// <summary>Voice volume is a percentage of the normal level, adjusted in these steps.</summary>
+        public const int VoiceVolumeStep = 10;
+        public const int VoiceVolumeMax = 200;
 
         public static readonly float[] ShootWindowOptions = { 2f, 3f, 4f, 5f, 6f };
         public static readonly string[] SpeedNames = { "Relaxed", "Normal", "Fast" };
@@ -96,6 +103,27 @@ namespace Bluff.Game
         {
             get => ClampLookSensitivity(PlayerPrefs.GetFloat(KeyLookSensitivity, 1f));
             set => Save(() => PlayerPrefs.SetFloat(KeyLookSensitivity, ClampLookSensitivity(value)));
+        }
+
+        /// <summary>Your microphone is not sent to the room.</summary>
+        public static bool VoiceMuted
+        {
+            get => PlayerPrefs.GetInt(KeyVoiceMuted, 0) == 1;
+            set => Save(() => PlayerPrefs.SetInt(KeyVoiceMuted, value ? 1 : 0));
+        }
+
+        /// <summary>You hear nobody, and your microphone is muted too.</summary>
+        public static bool VoiceDeafened
+        {
+            get => PlayerPrefs.GetInt(KeyVoiceDeafened, 0) == 1;
+            set => Save(() => PlayerPrefs.SetInt(KeyVoiceDeafened, value ? 1 : 0));
+        }
+
+        /// <summary>Incoming voice volume in percent (100 = normal).</summary>
+        public static int VoiceVolume
+        {
+            get => Mathf.Clamp(PlayerPrefs.GetInt(KeyVoiceVolume, 100), 0, VoiceVolumeMax);
+            set => Save(() => PlayerPrefs.SetInt(KeyVoiceVolume, Mathf.Clamp(value, 0, VoiceVolumeMax)));
         }
 
         static float ClampLookSensitivity(float value) =>
