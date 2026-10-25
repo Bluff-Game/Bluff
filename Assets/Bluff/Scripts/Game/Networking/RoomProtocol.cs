@@ -14,13 +14,15 @@ namespace Bluff.Game
         public bool Connected;
         public bool Ready;
         public bool IsBot;
+        /// <summary>A bot is playing for this human seat (disconnected or idle).</summary>
+        public bool Autopilot;
         public int Outfit;
         public int[] Effects = new int[7];
     }
 
     internal enum RoomMessage : byte
     {
-        Lobby, Start, Bootstrap, Batch, Open, Intent, Ready, SceneReady, Presented, Rejected, End, ReturnRoom, Emote
+        Lobby, Start, Bootstrap, Batch, Open, Intent, Ready, SceneReady, Presented, Rejected, End, ReturnRoom, Emote, Status, Resume
     }
 
     internal enum RoomAction : byte
@@ -71,7 +73,9 @@ namespace Bluff.Game
     internal static class RoomProtocol
     {
         public const int MaxPayload = 65536;
-        public const int Version = 4;
+        public const int Version = 5;
+        public const float MaxOpenSeconds = 120f;
+        const int MaxCodeBytes = 32;
         const int Magic = 0x424C5546;
         const int MaxCards = 52;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
@@ -116,7 +120,7 @@ namespace Bluff.Game
                         w.Write((byte)p.Seat); w.Write((byte)p.Target); w.Write((byte)p.Emote); break;
                     case RoomMessage.Lobby:
                         w.Write(p.Seat);
-                        Text(w, p.Text, 16);
+                        Text(w, p.Text, MaxCodeBytes);
                         Require(p.Seats != null && p.Seats.Length == 4);
                         foreach (var seat in p.Seats)
                         {
@@ -159,6 +163,14 @@ namespace Bluff.Game
                     case RoomMessage.Ready:
                         w.Write(p.Flag);
                         break;
+                    case RoomMessage.Status:
+                        Require(p.Seats != null && p.Seats.Length == 4);
+                        foreach (var seat in p.Seats)
+                        {
+                            Require(seat != null);
+                            w.Write((byte)((seat.Connected ? 1 : 0) | (seat.Autopilot ? 2 : 0)));
+                        }
+                        break;
                     case RoomMessage.Rejected:
                     case RoomMessage.End:
                         Text(w, p.Text, 512);
@@ -180,14 +192,14 @@ namespace Bluff.Game
                 using (var r = new BinaryReader(stream, Utf8))
                 {
                     Require(r.ReadInt32() == Magic && r.ReadByte() == Version);
-                    var p = new RoomPacket { Type = (RoomMessage)Number(r.ReadByte(), 0, (int)RoomMessage.Emote), Revision = Number(r.ReadInt32(), 0, int.MaxValue) };
+                    var p = new RoomPacket { Type = (RoomMessage)Number(r.ReadByte(), 0, (int)RoomMessage.Resume), Revision = Number(r.ReadInt32(), 0, int.MaxValue) };
                     switch (p.Type)
                     {
                         case RoomMessage.Emote:
                             p.Seat=Number(r.ReadByte(),0,3); p.Target=Number(r.ReadByte(),0,3); p.Emote=Number(r.ReadByte(),0,1); Require(p.Seat!=p.Target); break;
                         case RoomMessage.Lobby:
                             p.Seat = Number(r.ReadInt32(), 0, 3);
-                            p.Text = Text(r, 16);
+                            p.Text = Text(r, MaxCodeBytes);
                             p.Seats = new RoomSeat[4];
                             for (int i = 0; i < 4; i++)
                             {
@@ -214,7 +226,7 @@ namespace Bluff.Game
                             break;
                         case RoomMessage.Open:
                             p.Seconds = r.ReadSingle();
-                            Require(!float.IsNaN(p.Seconds) && !float.IsInfinity(p.Seconds) && p.Seconds >= 0 && p.Seconds <= 30);
+                            Require(!float.IsNaN(p.Seconds) && !float.IsInfinity(p.Seconds) && p.Seconds >= 0 && p.Seconds <= MaxOpenSeconds);
                             p.Flag = Bool(r);
                             break;
                         case RoomMessage.Intent:
@@ -237,6 +249,14 @@ namespace Bluff.Game
                             break;
                         case RoomMessage.Ready:
                             p.Flag = Bool(r);
+                            break;
+                        case RoomMessage.Status:
+                            p.Seats = new RoomSeat[4];
+                            for (int i = 0; i < 4; i++)
+                            {
+                                int flags = Number(r.ReadByte(), 0, 3);
+                                p.Seats[i] = new RoomSeat { SeatId = i, Connected = (flags & 1) != 0, Autopilot = (flags & 2) != 0 };
+                            }
                             break;
                         case RoomMessage.Rejected:
                         case RoomMessage.End:

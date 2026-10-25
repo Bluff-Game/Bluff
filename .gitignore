@@ -34,3 +34,11 @@ mono_crash.*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local development and test tooling: kept on this machine, never pushed.
+# Shipped code must not reference anything in these folders.
+/[Aa]ssets/[Bb]luff/[Dd]ev/
+/[Aa]ssets/[Bb]luff/[Dd]ev.meta
+/[Aa]ssets/[Bb]luff/[Tt]ests/
+/[Aa]ssets/[Bb]luff/[Tt]ests.meta
+/[Dd]ev[Tt]ools/

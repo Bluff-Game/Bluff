@@ -85,6 +85,9 @@ namespace Bluff.Game
         string waitingHint = "Waiting for opponents";
         bool lastTurnVisible;
         bool lastShootVisible;
+        readonly Dictionary<int, string> seatNotes = new Dictionary<int, string>();
+        double turnEnds;
+        int turnSecondsShown = -1;
 
         public event System.Action<List<int>, Element, bool> PlayRequested;
         public event System.Action PassRequested;
@@ -460,7 +463,7 @@ namespace Bluff.Game
                         label.transform.SetAsFirstSibling();
                         labels.Add(id, label);
                     }
-                    label.SetName(PlayerName(id));
+                    label.SetName(LabelName(id));
                     label.SetCount(Value(snapshot.HandCounts, id));
                     label.SetBullets(Value(snapshot.Bullets, id));
                     label.SetPower(Value(snapshot.KnownPowers, id), Value(snapshot.PowerSpent, id));
@@ -606,11 +609,32 @@ namespace Bluff.Game
         public void EndHumanTurn()
         {
             humanTurn = false;
+            turnEnds = 0;
             shieldArmed = false;
             SetTargetMode(false);
             if (hand != null) hand.SetInteractable(false);
             Refresh();
         }
+
+        /// <summary>Online turn deadline on the realtime clock; 0 hides the countdown.</summary>
+        public void SetTurnTimer(double endsAt)
+        {
+            turnEnds = endsAt;
+            turnSecondsShown = -1;
+            Refresh();
+        }
+
+        int TurnSecondsLeft => turnEnds > 0 ? Mathf.Max(0, Mathf.CeilToInt((float)(turnEnds - Time.realtimeSinceStartupAsDouble))) : -1;
+
+        /// <summary>Short status after a seat's name, such as "offline"; null clears it.</summary>
+        public void SetSeatNote(int id, string note)
+        {
+            if (string.IsNullOrEmpty(note)) seatNotes.Remove(id);
+            else seatNotes[id] = note;
+            if (labels.TryGetValue(id, out var label)) label.SetName(LabelName(id));
+        }
+
+        string LabelName(int id) => seatNotes.TryGetValue(id, out var note) ? PlayerName(id) + " (" + note + ")" : PlayerName(id);
 
         public void SetWaitingHint(string text)
         {
@@ -808,7 +832,8 @@ namespace Bluff.Game
             }
             else if (canPlay)
             {
-                taskTitle.text = "Your turn";
+                int secondsLeft = TurnSecondsLeft;
+                taskTitle.text = secondsLeft >= 0 ? "Your turn · " + secondsLeft + "s" : "Your turn";
                 taskText.text = targetMode ? "Choose a recipient" : count == 0 ? "Select 1-" + maxPerPlay + " cards" :
                     !chosenElement.HasValue ? "Choose an element" : "Ready to play";
             }
@@ -1055,6 +1080,11 @@ namespace Bluff.Game
             if (emoteTray != null && (Time.timeScale <= 0f || GameTutorial.IsShowing || InputCompat.ModalIsShowing())) emoteTray.gameObject.SetActive(false);
             if (recipientTray != null && (Time.timeScale <= 0f || GameTutorial.IsShowing || InputCompat.ModalIsShowing())) recipientTray.gameObject.SetActive(false);
             if (!Mathf.Approximately(layoutWidth, root.rect.width)) LayoutActions();
+            if (humanTurn && turnEnds > 0 && TurnSecondsLeft != turnSecondsShown)
+            {
+                turnSecondsShown = TurnSecondsLeft;
+                Refresh();
+            }
             var cam = scene != null ? scene.Camera : null;
             if (cam != null)
             {
