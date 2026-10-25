@@ -463,8 +463,10 @@ namespace Bluff.Game
                 seatStates[i] = UIKit.CreateText(row.transform, "State", "", 23, Theme.Muted, TextAnchor.MiddleRight);
                 seatStates[i].rectTransform.Stretch(510f, 20f, 10f, 10f);
             }
-            var botNote = UIKit.CreateText(onlineLobby, "BotFill", "Empty seats are filled by bots when the match starts.", 23, Theme.Muted);
-            botNote.rectTransform.Place(UIKit.Top, new Vector2(0f, -476f), new Vector2(width, 46f));
+            var botNote = UIKit.CreateText(onlineLobby, "BotFill", "Empty seats are filled by bots when the match starts.", 23, Theme.Muted, TextAnchor.MiddleLeft);
+            botNote.rectTransform.Place(UIKit.Top, new Vector2(-(VoiceControls.Size.x + 16f) / 2f, -476f), new Vector2(width - VoiceControls.Size.x - 16f, 46f));
+            var voice = VoiceControls.Create(onlineLobby, false);
+            voice.GetComponent<RectTransform>().Place(UIKit.Top, new Vector2((width - VoiceControls.Size.x) / 2f, -476f), VoiceControls.Size);
 
             var statusArea = UIKit.CreateRect("RoomStatus", content);
             statusArea.Place(UIKit.Bottom, new Vector2(0f, 178f), new Vector2(width, 128f));

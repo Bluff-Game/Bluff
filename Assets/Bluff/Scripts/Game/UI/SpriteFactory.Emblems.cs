@@ -3,7 +3,7 @@ using Bluff.Core;
 
 namespace Bluff.Game
 {
-    public enum GameIcon { Duel, Online, Guide, Settings, Exit, Profile, Shop, Costume, Effects, Coin, Pause, Play, Home, Close, Restart, Laugh, Applaud, Cards, Challenge, Check, Clock, Back, Sun, Moon, Star, Lightning, Water, Leaf, Mask, MataElang, Tameng, Bakar, Badai, Cermin, Hadiah, Lock }
+    public enum GameIcon { Duel, Online, Guide, Settings, Exit, Profile, Shop, Costume, Effects, Coin, Pause, Play, Home, Close, Restart, Laugh, Applaud, Cards, Challenge, Check, Clock, Back, Sun, Moon, Star, Lightning, Water, Leaf, Mask, MataElang, Tameng, Bakar, Badai, Cermin, Hadiah, Lock, Mic, MicOff, Headset, HeadsetOff }
 
     public static partial class SpriteFactory
     {
@@ -65,6 +65,10 @@ namespace Bluff.Game
                 case GameIcon.Lock:
                     float shackle = Mathf.Abs((p-new Vector2(0f,.13f)).magnitude-.17f)-.035f;
                     return Mathf.Min(Mathf.Max(shackle,.08f-p.y),SdBox(p-new Vector2(0f,-.13f),new Vector2(.25f,.19f)));
+                case GameIcon.Mic: return MicSdf(p);
+                case GameIcon.MicOff: return Slashed(MicSdf(p), p);
+                case GameIcon.Headset: return HeadsetSdf(p);
+                case GameIcon.HeadsetOff: return Slashed(HeadsetSdf(p), p);
                 case GameIcon.Cards: return CardsSdf(p);
                 case GameIcon.Challenge: return CrosshairSdf(p);
                 case GameIcon.Clock: return ClockSdf(p);
@@ -107,6 +111,30 @@ namespace Bluff.Game
                     float lapel = Mathf.Min(SdSegment(p,new Vector2(-.13f,.32f),new Vector2(0f,-.05f)),SdSegment(p,new Vector2(.13f,.32f),new Vector2(0f,-.05f))) - .021f;
                     return Mathf.Min(coat, Mathf.Min(lapel, (p - new Vector2(0f,-.22f)).magnitude - .027f));
             }
+        }
+
+        static float MicSdf(Vector2 p)
+        {
+            float head = SdSegment(p, new Vector2(0f, .06f), new Vector2(0f, .19f)) - .1f;
+            float cradle = Mathf.Max(Mathf.Abs((p - new Vector2(0f, .1f)).magnitude - .19f) - .026f, p.y - .1f);
+            float stem = SdSegment(p, new Vector2(0f, -.09f), new Vector2(0f, -.25f)) - .026f;
+            float foot = SdSegment(p, new Vector2(-.13f, -.27f), new Vector2(.13f, -.27f)) - .026f;
+            return Mathf.Min(Mathf.Min(head, cradle), Mathf.Min(stem, foot));
+        }
+
+        static float HeadsetSdf(Vector2 p)
+        {
+            float band = Mathf.Max(Mathf.Abs(p.magnitude - .27f) - .03f, -p.y - .04f);
+            float cups = Mathf.Min(RoundedBox(p - new Vector2(-.27f, -.12f), new Vector2(.03f, .09f), .05f),
+                RoundedBox(p - new Vector2(.27f, -.12f), new Vector2(.03f, .09f), .05f));
+            return Mathf.Min(band, cups);
+        }
+
+        /// <summary>Crosses a glyph out, leaving a small gap on both sides of the stroke.</summary>
+        static float Slashed(float shape, Vector2 p)
+        {
+            float slash = SdSegment(p, new Vector2(-.32f, .32f), new Vector2(.32f, -.32f));
+            return Mathf.Min(Mathf.Max(shape, .075f - slash), slash - .032f);
         }
 
         static readonly Vector2[] CoatPoly = { new Vector2(-.13f,.32f),new Vector2(-.34f,.18f),new Vector2(-.43f,-.08f),new Vector2(-.25f,-.13f),new Vector2(-.23f,-.36f),new Vector2(.23f,-.36f),new Vector2(.25f,-.13f),new Vector2(.43f,-.08f),new Vector2(.34f,.18f),new Vector2(.13f,.32f),new Vector2(0f,.2f) };

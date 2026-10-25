@@ -105,6 +105,9 @@ namespace Bluff.Game
                 room.EmoteReceived += OnEmote;
                 room.SeatStatusChanged += OnSeatStatus;
                 OnSeatStatus();
+                // Sits just above the power card and player card in the bottom-left corner.
+                var voice = VoiceControls.Create(Root, true);
+                voice.GetComponent<RectTransform>().Place(UIKit.BottomLeft, new Vector2(216f, 316f), VoiceControls.Size);
             }
             hud.PlayRequested += OnHumanPlay;
             hud.PassRequested += OnHumanPass;
