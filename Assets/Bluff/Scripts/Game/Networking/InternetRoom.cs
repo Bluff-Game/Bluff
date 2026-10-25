@@ -194,6 +194,8 @@ namespace Bluff.Game
                     }
                 }
                 token.ThrowIfCancellationRequested();
+                // Voice rides on the same Unity Services sign-in; it is optional and never blocks the room.
+                if (endpoint.UsesServices) RoomVoice.Join(host ? RoomCode : code);
                 Status = "Waiting for players to get ready.";
             }
             catch (OperationCanceledException)
@@ -774,6 +776,7 @@ namespace Bluff.Game
             await Task.Yield();
             if (connectionTask != null && !connectionTask.IsCompleted) await connectionTask;
             CleanupNetwork();
+            await RoomVoice.LeaveAsync();
             await ReleaseAuthentication();
             await Task.Yield();
             if (!failed) { Error = ""; Status = ""; }
@@ -858,6 +861,7 @@ namespace Bluff.Game
             cancellation?.Cancel();
             cancellation?.Dispose();
             CleanupNetwork();
+            _ = RoomVoice.LeaveAsync();
             _ = ReleaseAuthentication();
             Current = null;
         }
