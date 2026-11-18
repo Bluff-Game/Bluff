@@ -103,6 +103,10 @@ jobs:
           buildMethod: Bluff.EditorTools.BuildCommand.BuildWindows
           customParameters: -commitSha ${{ needs.version.outputs.commit }}
 
+      - name: Normalize build ownership
+        shell: bash
+        run: sudo chown -R "$(id -u):$(id -g)" Builds
+
       - name: Validate and package the playable game
         env:
           VERSION: ${{ needs.version.outputs.version }}
