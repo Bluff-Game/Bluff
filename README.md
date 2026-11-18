@@ -130,3 +130,9 @@ Targeted checks run in an isolated Unity 6000.3.25f1 project copy, preserving th
 Earlier targeted passes also covered 16:9 and 4:3 layouts, player card hover poses, and pile-label visibility.
 
 These checks do not establish that every animation frame is collision-free. Multi-client cosmetic synchronization over internet Relay and WebGL releases still require separate verification. The verification editor can emit a Unity Search database exception during startup; this is separate from game compilation and runtime capture.
+
+## Versioned Windows releases
+
+The GitHub Actions workflow at `.github/workflows/build-release.yml` builds the Windows executable from a semantic version. Create a tag such as `v1.2.0` and push it to start a build, or run the workflow manually with a version input. The tag is the release source of truth; the workflow passes the matching version into Unity as `PlayerSettings.bundleVersion`.
+
+Each successful build produces a `Bluff-<version>-Windows.zip` Actions artifact and publishes the ZIP, SHA-256 checksum, and release manifest to the matching GitHub Release. Configure the repository secret `UNITY_LICENSE` with the Unity license XML before creating the first release. GameCI's activation flow uses this secret for the Unity editor runner.

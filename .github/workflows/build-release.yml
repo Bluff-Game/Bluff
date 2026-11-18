@@ -1,0 +1,127 @@
+name: Build and release Windows game
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to build, for example 1.2.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  UNITY_VERSION: 6000.3.25f1
+  UNITY_PROJECT_PATH: .
+
+concurrency:
+  group: bluff-release-${{ github.ref_name || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      artifact: ${{ steps.resolve.outputs.artifact }}
+    steps:
+      - name: Resolve version from tag or manual input
+        id: resolve
+        shell: bash
+        env:
+          PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${PUSHED_TAG:-$MANUAL_VERSION}"
+          version="${version#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a semantic version such as 1.2.0, got '$version'." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "artifact=Bluff-$version-Windows" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build Windows executable
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build with Unity
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        with:
+          projectPath: ${{ env.UNITY_PROJECT_PATH }}
+          unityVersion: ${{ env.UNITY_VERSION }}
+          targetPlatform: StandaloneWindows64
+          buildsPath: Builds
+          versioning: Custom
+          version: ${{ needs.version.outputs.version }}
+          buildMethod: Bluff.EditorTools.BuildCommand.BuildWindows
+          customParameters: >-
+            -buildPath Builds/Bluff.exe
+
+      - name: Package build and write release manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+          ARTIFACT: ${{ needs.version.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          archive="release/${ARTIFACT}.zip"
+          (cd Builds && zip -r "../${archive}" .)
+          sha256sum "$archive" > "${archive}.sha256"
+          cat > release/release-manifest.json <<EOF
+          {
+            "name": "Bluff",
+            "version": "${VERSION}",
+            "tag": "${TAG}",
+            "commit": "${GITHUB_SHA}",
+            "unityVersion": "${UNITY_VERSION}",
+            "target": "StandaloneWindows64"
+          }
+          EOF
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.version.outputs.artifact }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.version.outputs.artifact }}
+          path: release
+
+      - name: Create release and attach build files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Bluff $VERSION" \
+            --generate-notes
