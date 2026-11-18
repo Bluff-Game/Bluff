@@ -135,4 +135,23 @@ These checks do not establish that every animation frame is collision-free. Mult
 
 The GitHub Actions workflow at `.github/workflows/build-release.yml` builds the Windows executable from a semantic version. Create a tag such as `v1.2.0` and push it to start a build, or run the workflow manually with a version input. The tag is the release source of truth; the workflow passes the matching version into Unity as `PlayerSettings.bundleVersion`.
 
-Each successful build produces a `Bluff-<version>-Windows.zip` Actions artifact and publishes the ZIP, SHA-256 checksum, and release manifest to the matching GitHub Release. Configure the repository secret `UNITY_LICENSE` with the Unity license XML before creating the first release. GameCI's activation flow uses this secret for the Unity editor runner.
+The build uses the editor version in `ProjectSettings/ProjectVersion.txt` (currently `6000.3.25f1`) and Windows x64 with Mono. Each successful build uploads an Actions artifact named `Bluff-<version>-Windows`, retained for 30 days, and publishes these files to the matching GitHub Release:
+
+- `Bluff-<version>-Windows.zip`: the complete Windows player, including `Bluff.exe`, data, and runtime libraries.
+- `release-manifest.json`: version, source commit, editor version, and target.
+- `SHA256SUMS.txt`: checksums for the ZIP and manifest, verified before publication.
+
+Before the first release, open **Settings > Secrets and variables > Actions** and add `UNITY_EMAIL` and `UNITY_PASSWORD`, plus either `UNITY_LICENSE` (compatible license XML) or `UNITY_SERIAL`. Follow [GameCI's activation instructions](https://game.ci/docs/github/activation/) for your Unity license type. A locally activated editor does not automatically activate GitHub's runner. Do not commit credentials or license files.
+
+To release the current `main` commit, use an unused version (replace `1.2.0` below):
+
+```sh
+git switch main
+git pull --ff-only origin main
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Alternatively, open **Actions > Build and release Windows game > Run workflow**, select `main` and enter `1.2.0`. A manual run creates the tag only after a successful build. Versions use `MAJOR.MINOR.PATCH`, without leading zeroes or prerelease suffixes; each component must fit 0-65535. An existing tag must point to the selected commit. Published release assets are never overwritten; use a new version for changes. A failed draft upload can be retried.
+
+Download the ZIP from **Releases**, extract the entire folder, then run `Bluff.exe`. Keep `Bluff_Data`, `UnityPlayer.dll`, and the other bundled runtime files beside the executable. Internet rooms also require the Unity Cloud configuration described above.

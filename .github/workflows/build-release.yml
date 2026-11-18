@@ -2,126 +2,192 @@ name: Build and release Windows game
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Semantic version to build, for example 1.2.0'
+        description: 'Release version, for example 1.2.0 (optional v prefix)'
         required: true
         type: string
 
 permissions:
-  contents: write
-
-env:
-  UNITY_VERSION: 6000.3.25f1
-  UNITY_PROJECT_PATH: .
-
-concurrency:
-  group: bluff-release-${{ github.ref_name || inputs.version }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   version:
-    name: Resolve release version
-    runs-on: ubuntu-latest
+    name: Validate version and source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       artifact: ${{ steps.resolve.outputs.artifact }}
+      commit: ${{ steps.source.outputs.commit }}
     steps:
-      - name: Resolve version from tag or manual input
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release version
         id: resolve
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+        run: python3 .github/scripts/release.py version "$RELEASE_VERSION"
+
+      - name: Bind the version to this exact commit
+        id: source
         shell: bash
         env:
-          PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          MANUAL_VERSION: ${{ inputs.version }}
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          version="${PUSHED_TAG:-$MANUAL_VERSION}"
-          version="${version#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Expected a semantic version such as 1.2.0, got '$version'." >&2
-            exit 1
+          commit=$(git rev-parse HEAD)
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            tagged_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+            if [[ "$tagged_commit" != "$commit" ]]; then
+              echo "::error::Tag $TAG belongs to another commit. Select that tag or use a new version."
+              exit 1
+            fi
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "artifact=Bluff-$version-Windows" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build Windows executable
+    name: Build Windows x64
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Build with Unity
-        uses: game-ci/unity-builder@v4
+      - name: Check Unity activation configuration
+        shell: bash
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          if [[ -z "$UNITY_EMAIL" || -z "$UNITY_PASSWORD" || ( -z "$UNITY_LICENSE" && -z "$UNITY_SERIAL" ) ]]; then
+            echo "::error::Configure UNITY_EMAIL and UNITY_PASSWORD, plus UNITY_LICENSE or UNITY_SERIAL. See README > Versioned Windows releases."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          projectPath: ${{ env.UNITY_PROJECT_PATH }}
-          unityVersion: ${{ env.UNITY_VERSION }}
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+
+      - name: Cache imported Unity assets
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: Library
+          key: windows-mono-${{ hashFiles('ProjectSettings/ProjectVersion.txt', 'Packages/**') }}-${{ needs.version.outputs.commit }}
+          restore-keys: |
+            windows-mono-${{ hashFiles('ProjectSettings/ProjectVersion.txt', 'Packages/**') }}-
+
+      - name: Build with the project's Unity editor version
+        uses: game-ci/unity-builder@4423ee75828dff56037d1d1cfdac6b68e3a6ba00 # v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          projectPath: .
+          unityVersion: auto
           targetPlatform: StandaloneWindows64
+          buildName: Bluff
+          # GameCI appends the target platform to buildsPath.
           buildsPath: Builds
           versioning: Custom
           version: ${{ needs.version.outputs.version }}
           buildMethod: Bluff.EditorTools.BuildCommand.BuildWindows
-          customParameters: >-
-            -buildPath Builds/Bluff.exe
+          customParameters: -commitSha ${{ needs.version.outputs.commit }}
 
-      - name: Package build and write release manifest
-        shell: bash
+      - name: Validate and package the playable game
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          TAG: ${{ needs.version.outputs.tag }}
-          ARTIFACT: ${{ needs.version.outputs.artifact }}
-        run: |
-          set -euo pipefail
-          mkdir -p release
-          archive="release/${ARTIFACT}.zip"
-          (cd Builds && zip -r "../${archive}" .)
-          sha256sum "$archive" > "${archive}.sha256"
-          cat > release/release-manifest.json <<EOF
-          {
-            "name": "Bluff",
-            "version": "${VERSION}",
-            "tag": "${TAG}",
-            "commit": "${GITHUB_SHA}",
-            "unityVersion": "${UNITY_VERSION}",
-            "target": "StandaloneWindows64"
-          }
-          EOF
+          SOURCE_COMMIT: ${{ needs.version.outputs.commit }}
+        run: >-
+          python3 .github/scripts/release.py package
+          --build Builds/StandaloneWindows64
+          --output Builds/release
+          --version "$VERSION"
+          --commit "$SOURCE_COMMIT"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.version.outputs.artifact }}
-          path: release/
+          path: Builds/release/
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ needs.version.outputs.artifact }}-diagnostics-${{ github.run_attempt }}
+          path: Logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
   release:
-    name: Publish GitHub release
+    name: Publish verified release
     needs: [version, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: bluff-release-${{ needs.version.outputs.tag }}
+      cancel-in-progress: false
     steps:
-      - name: Download packaged build
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ needs.version.outputs.artifact }}
           path: release
 
-      - name: Create release and attach build files
+      - name: Verify artifact integrity
+        working-directory: release
+        run: sha256sum --check SHA256SUMS.txt
+
+      - name: Create a draft, upload assets, then publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.version.outputs.commit }}
+        shell: bash
         run: |
           set -euo pipefail
-          gh release create "$TAG" release/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Bluff $VERSION" \
-            --generate-notes
+          # A tag is immutable: never publish a build under another commit's tag.
+          if tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>/dev/null); then
+            object_type=$(jq -r '.object.type' <<< "$tag_object")
+            object_sha=$(jq -r '.object.sha' <<< "$tag_object")
+            while [[ "$object_type" == tag ]]; do
+              tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")
+              object_type=$(jq -r '.object.type' <<< "$tag_object")
+              object_sha=$(jq -r '.object.sha' <<< "$tag_object")
+            done
+            [[ "$object_type" == commit && "$object_sha" == "$SOURCE_COMMIT" ]] || {
+              echo "::error::Tag $TAG does not match the built commit."
+              exit 1
+            }
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" --method POST \
+              -f ref="refs/tags/$TAG" -f sha="$SOURCE_COMMIT" > /dev/null
+          fi
+
+          if existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft 2>/dev/null); then
+            if [[ $(jq -r '.isDraft' <<< "$existing") != true ]]; then
+              echo "Release $TAG is already published; keeping its assets unchanged."
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --draft --title "Bluff $VERSION" --generate-notes
+          fi
+          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
