@@ -95,6 +95,10 @@ Choose **Play online**, create a room, and share its code. Other players join an
 
 Each turn has a 30-second timer. When it runs out, the table passes for that player, or plays one card honestly if they lead the round. After two timeouts in a row, a bot takes over the seat until the player chooses **Take back control**. If a player disconnects, a bot finishes the match in their seat, and the seat returns to a regular bot in the lobby. If the host leaves, the room closes. Host migration and mid-match reconnect are not implemented.
 
+The project is linked to the BLUF Unity Cloud project (`d778da03-d0cb-4da6-a7a0-9ccc24865d1d`), using the default `production` environment. This project ID is public configuration, not an API key. Keep the link in `ProjectSettings/ProjectSettings.asset` when building on another machine. Unity activation secrets only license the CI editor; they do not configure online play.
+
+On 2026-11-19, two local Windows player processes connected through live internet Relay, joined the same room, received their private 13-card hands, exchanged directed emotes, and synchronized match updates. This does not cover two separate devices or networks. Vivox voice chat is still unconfigured on this Cloud project; voice remains optional and does not block rooms.
+
 No private service keys belong in the source. Missing service configuration produces an error instead of a simulated room.
 
 ## Source map
@@ -138,10 +142,12 @@ The GitHub Actions workflow at `.github/workflows/build-release.yml` builds the 
 The build uses the editor version in `ProjectSettings/ProjectVersion.txt` (currently `6000.3.25f1`) and Windows x64 with Mono. Each successful build uploads an Actions artifact named `Bluff-<version>-Windows`, retained for 30 days, and publishes these files to the matching GitHub Release:
 
 - `Bluff-<version>-Windows.zip`: the complete Windows player, including `Bluff.exe`, data, and runtime libraries.
-- `release-manifest.json`: version, source commit, editor version, and target.
+- `release-manifest.json`: version, source commit, editor version, target, and Unity Cloud project ID.
 - `SHA256SUMS.txt`: checksums for the ZIP and manifest, verified before publication.
 
 Before the first release, open **Settings > Secrets and variables > Actions** and add `UNITY_EMAIL` and `UNITY_PASSWORD`, plus either `UNITY_LICENSE` (compatible license XML) or `UNITY_SERIAL`. Follow [GameCI's activation instructions](https://game.ci/docs/github/activation/) for your Unity license type. A locally activated editor does not automatically activate GitHub's runner. Do not commit credentials or license files.
+
+Before starting Unity, CI validates the committed Cloud project ID and checks live anonymous sign-in for two temporary players, a Relay allocation, a join code, and a client join. Temporary players are deleted afterward. This checks service configuration, not gameplay packets or connectivity from every player network. A Unity Services outage blocks publication; rerun after recovery. The Editor build entry also rejects an unlinked project, and packaging requires its Cloud project ID to match the source. Use `python3 .github/scripts/online.py --smoke` to run the service check locally.
 
 To release the current `main` commit, use an unused version (replace `1.2.0` below):
 

@@ -18,6 +18,7 @@ namespace Bluff.EditorTools
 
         public static void BuildWindows()
         {
+            ValidateOnlineConfiguration();
             var version = GetArgument("-buildVersion")
                 ?? Environment.GetEnvironmentVariable("BLUFF_VERSION");
             var buildPath = GetArgument("-customBuildPath") ?? GetArgument("-buildPath") ?? DefaultBuildPath;
@@ -67,6 +68,7 @@ namespace Bluff.EditorTools
                     commit = GetArgument("-commitSha") ?? "local",
                     unityVersion = Application.unityVersion,
                     target = BuildTarget.StandaloneWindows64.ToString(),
+                    cloudProjectId = PlayerSettings.cloudProjectId,
                     scenes = scenes,
                 };
                 File.WriteAllText(Path.Combine(Path.GetDirectoryName(fullBuildPath), "build-info.json"), JsonUtility.ToJson(info, true));
@@ -80,6 +82,14 @@ namespace Bluff.EditorTools
             }
         }
 
+        public static void ValidateOnlineConfiguration()
+        {
+            // CloudProjectSettings reflects the Editor login session and can be empty in headless CI.
+            // PlayerSettings is the serialized value embedded in the built player's Application.cloudProjectId.
+            if (!Guid.TryParse(PlayerSettings.cloudProjectId, out var projectId) || projectId == Guid.Empty)
+                throw new BuildFailedException("Online release requires a Unity Cloud project. Link it in Project Settings > Services and commit ProjectSettings before building.");
+        }
+
         [Serializable]
         sealed class BuildInfo
         {
@@ -87,6 +97,7 @@ namespace Bluff.EditorTools
             public string commit;
             public string unityVersion;
             public string target;
+            public string cloudProjectId;
             public string[] scenes;
         }
 

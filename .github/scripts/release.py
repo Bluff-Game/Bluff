@@ -11,6 +11,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+from online import read_project_id, validate_project_id
+
 VERSION_RE = re.compile(r"\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 
 
@@ -53,7 +55,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def package_command(build: Path, output: Path, version: str, commit: str) -> None:
+def package_command(build: Path, output: Path, version: str, commit: str, settings: Path) -> None:
     version = validate_version(version)
     build, output = build.resolve(), output.resolve()
     if output == build or build in output.parents:
@@ -78,6 +80,12 @@ def package_command(build: Path, output: Path, version: str, commit: str) -> Non
             raise ValueError(f"build {key} does not match requested release: {info.get(key)!r} != {expected!r}")
     if not info.get("unityVersion"):
         raise ValueError("build metadata is missing the Unity editor version")
+    project_id = validate_project_id(info.get("cloudProjectId", ""))
+    if project_id != read_project_id(settings):
+        raise ValueError("build Unity Cloud project ID does not match the release source")
+    # Unity 6 embeds Application.cloudProjectId in the player's serialized global settings.
+    if project_id.encode("ascii") not in (build / "Bluff_Data/globalgamemanagers").read_bytes():
+        raise ValueError("player data does not contain the configured Unity Cloud project ID")
     files = [source for source in sorted(build.rglob("*")) if source.is_file()]
     # Unity's debug-only directories should not be distributed to players.
     files = [source for source in files if not any("DoNotShip" in part for part in source.relative_to(build).parts)]
@@ -94,6 +102,7 @@ def package_command(build: Path, output: Path, version: str, commit: str) -> Non
         "commit": commit,
         "target": "StandaloneWindows64",
         "unityVersion": info["unityVersion"],
+        "cloudProjectId": project_id,
         "archive": archive.name,
     }
     manifest_path = output / "release-manifest.json"
@@ -116,11 +125,12 @@ def main() -> int:
     package_parser.add_argument("--output", type=Path, required=True)
     package_parser.add_argument("--version", required=True)
     package_parser.add_argument("--commit", required=True)
+    package_parser.add_argument("--settings", type=Path, default=Path("ProjectSettings/ProjectSettings.asset"))
     args = parser.parse_args()
     if args.command == "version":
         version_command(args.value)
     else:
-        package_command(args.build, args.output, args.version, args.commit)
+        package_command(args.build, args.output, args.version, args.commit, args.settings)
     return 0
 
 

@@ -34,6 +34,7 @@ mono_crash.*
 Thumbs.db
 Desktop.ini
 .DS_Store
+__pycache__/
 
 # Local development and test tooling: kept on this machine, never pushed.
 # Shipped code must not reference anything in these folders.

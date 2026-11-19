@@ -52,6 +52,11 @@ jobs:
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
+      - name: Verify online project and live Authentication/Relay
+        run: |
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+          python3 .github/scripts/online.py --smoke
+
   build:
     name: Build Windows x64
     needs: version
@@ -117,6 +122,7 @@ jobs:
           --output Builds/release
           --version "$VERSION"
           --commit "$SOURCE_COMMIT"
+          --settings ProjectSettings/ProjectSettings.asset
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
